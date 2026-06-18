@@ -144,3 +144,65 @@ def test_cli_does_not_call_network_or_llm(tmp_path, capsys, monkeypatch):
     assert payload["extraction"]["claims_created"] == 1
     assert context_payload["metadata"]["answer_generated"] is False
     assert "src.llm_core" not in sys.modules
+
+
+def test_prompt_command_prints_valid_json(tmp_path, capsys):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db), "--extract"])
+    capsys.readouterr()
+
+    code, payload, _ = _run_cli(["prompt", "What does the SOP say about Wi-Fi?", "--db", str(db)], capsys)
+
+    assert code == 0
+    assert payload["command"] == "prompt"
+    assert payload["messages"][0]["role"] == "system"
+    assert payload["messages"][1]["role"] == "user"
+    assert "answer" not in payload
+
+
+def test_prompt_command_format_messages_prints_messages_only(tmp_path, capsys):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db), "--extract"])
+    capsys.readouterr()
+
+    code, payload, _ = _run_cli([
+        "prompt",
+        "What does the SOP say about Wi-Fi?",
+        "--db",
+        str(db),
+        "--format",
+        "messages",
+    ], capsys)
+
+    assert code == 0
+    assert payload == {
+        "command": "prompt",
+        "messages": payload["messages"],
+        "warnings": payload["warnings"],
+    }
+    assert len(payload["messages"]) == 2
+    assert "evidence_blocks" not in payload
+
+
+def test_prompt_command_does_not_call_network_or_llm(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi.\n", encoding="utf-8")
+
+    def fail_network(*args, **kwargs):
+        raise AssertionError("network should not be called")
+
+    monkeypatch.setattr(socket, "create_connection", fail_network)
+    sys.modules.pop("src.llm_core", None)
+
+    main(["ingest", str(document), "--db", str(db), "--extract"])
+    capsys.readouterr()
+    code, payload, _ = _run_cli(["prompt", "Wi-Fi", "--db", str(db)], capsys)
+
+    assert code == 0
+    assert payload["metadata"]["answer_generated"] is False
+    assert "src.llm_core" not in sys.modules
