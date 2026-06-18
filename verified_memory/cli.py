@@ -10,7 +10,7 @@ from typing import Any, Sequence
 
 from verified_memory.errors import VerifiedMemoryError
 from verified_memory.storage import SQLiteVerifiedMemoryStore
-from verified_memory.workflows import build_verified_context, extract_claims, ingest_document
+from verified_memory.workflows import build_prompt, build_verified_context, extract_claims, ingest_document
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -56,6 +56,14 @@ def _build_parser() -> argparse.ArgumentParser:
     context_parser.add_argument("--max-claims", type=int, default=5)
     context_parser.add_argument("--include-archived", action="store_true")
 
+    prompt_parser = subparsers.add_parser("prompt", help="build a verified-memory prompt without generating an answer")
+    prompt_parser.add_argument("question")
+    prompt_parser.add_argument("--db", required=True, help="SQLite database path")
+    prompt_parser.add_argument("--max-chunks", type=int, default=5)
+    prompt_parser.add_argument("--max-claims", type=int, default=5)
+    prompt_parser.add_argument("--include-archived", action="store_true")
+    prompt_parser.add_argument("--format", choices=["json", "messages"], default="json")
+
     stats_parser = subparsers.add_parser("stats", help="show local verified-memory counts")
     stats_parser.add_argument("--db", required=True, help="SQLite database path")
 
@@ -70,6 +78,8 @@ def _run_command(args: argparse.Namespace) -> dict[str, Any]:
         return _cmd_extract(args, store)
     if args.command == "context":
         return _cmd_context(args, store)
+    if args.command == "prompt":
+        return _cmd_prompt(args, store)
     if args.command == "stats":
         return _cmd_stats(store)
     raise ValueError(f"unsupported command: {args.command}")
@@ -129,6 +139,21 @@ def _cmd_context(args: argparse.Namespace, store: SQLiteVerifiedMemoryStore) -> 
     )
     payload = package.to_dict()
     payload["command"] = "context"
+    return payload
+
+
+def _cmd_prompt(args: argparse.Namespace, store: SQLiteVerifiedMemoryStore) -> dict[str, Any]:
+    prompt = build_prompt(
+        args.question,
+        store,
+        max_chunks=args.max_chunks,
+        max_claims=args.max_claims,
+        include_archived=args.include_archived,
+    )
+    if args.format == "messages":
+        return {"command": "prompt", "messages": prompt.messages, "warnings": prompt.warnings}
+    payload = prompt.to_dict()
+    payload["command"] = "prompt"
     return payload
 
 
