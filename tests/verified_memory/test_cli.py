@@ -206,3 +206,129 @@ def test_prompt_command_does_not_call_network_or_llm(tmp_path, capsys, monkeypat
     assert code == 0
     assert payload["metadata"]["answer_generated"] is False
     assert "src.llm_core" not in sys.modules
+
+
+def test_validate_answer_command_accepts_answer(tmp_path, capsys):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+    ref = SQLiteVerifiedMemoryStore(db).list_document_chunks()[0].chunk_id
+
+    code, payload, _ = _run_cli([
+        "validate-answer",
+        "What does the SOP say about Wi-Fi?",
+        "--db",
+        str(db),
+        "--answer",
+        f"Users must connect to Wi-Fi during OOBE. [{ref}]",
+    ], capsys)
+
+    assert code == 0
+    assert payload["command"] == "validate-answer"
+    assert payload["severity"] == "pass"
+    assert payload["metadata"]["answer_generated"] is False
+
+
+def test_validate_answer_command_accepts_answer_file(tmp_path, capsys):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    answer_file = tmp_path / "answer.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+    ref = SQLiteVerifiedMemoryStore(db).list_document_chunks()[0].chunk_id
+    answer_file.write_text(f"Users must connect to Wi-Fi during OOBE. [{ref}]", encoding="utf-8")
+
+    code, payload, _ = _run_cli([
+        "validate-answer",
+        "What does the SOP say about Wi-Fi?",
+        "--db",
+        str(db),
+        "--answer-file",
+        str(answer_file),
+    ], capsys)
+
+    assert code == 0
+    assert payload["severity"] == "pass"
+    assert payload["used_citation_refs"] == [ref]
+
+
+def test_validate_answer_rejects_both_answer_and_answer_file(tmp_path, capsys):
+    db = tmp_path / "vm.sqlite3"
+    answer_file = tmp_path / "answer.txt"
+    answer_file.write_text("answer", encoding="utf-8")
+
+    code = main([
+        "validate-answer",
+        "Question?",
+        "--db",
+        str(db),
+        "--answer",
+        "answer",
+        "--answer-file",
+        str(answer_file),
+    ])
+    captured = capsys.readouterr()
+
+    assert code != 0
+    assert "exactly one of --answer or --answer-file" in captured.err
+
+
+def test_validate_answer_rejects_neither_answer_nor_answer_file(tmp_path, capsys):
+    db = tmp_path / "vm.sqlite3"
+
+    code = main(["validate-answer", "Question?", "--db", str(db)])
+    captured = capsys.readouterr()
+
+    assert code != 0
+    assert "exactly one of --answer or --answer-file" in captured.err
+
+
+def test_validate_answer_exits_nonzero_for_validation_errors(tmp_path, capsys):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+
+    code, payload, _ = _run_cli([
+        "validate-answer",
+        "What does the SOP say about Wi-Fi?",
+        "--db",
+        str(db),
+        "--answer",
+        "Users must connect to Wi-Fi. [made-up:chunk:9999]",
+    ], capsys)
+
+    assert code != 0
+    assert payload["severity"] == "error"
+    assert payload["issues"][0]["code"] == "invented_citation"
+
+
+def test_validate_answer_command_does_not_import_or_call_llm_core(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi.\n", encoding="utf-8")
+
+    def fail_network(*args, **kwargs):
+        raise AssertionError("network should not be called")
+
+    monkeypatch.setattr(socket, "create_connection", fail_network)
+    sys.modules.pop("src.llm_core", None)
+
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+    code, payload, _ = _run_cli([
+        "validate-answer",
+        "Wi-Fi",
+        "--db",
+        str(db),
+        "--answer",
+        "Users must connect to Wi-Fi.",
+    ], capsys)
+
+    assert code == 0
+    assert payload["metadata"]["answer_generated"] is False
+    assert "src.llm_core" not in sys.modules

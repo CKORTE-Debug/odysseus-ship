@@ -10,7 +10,13 @@ from typing import Any, Sequence
 
 from verified_memory.errors import VerifiedMemoryError
 from verified_memory.storage import SQLiteVerifiedMemoryStore
-from verified_memory.workflows import build_prompt, build_verified_context, extract_claims, ingest_document
+from verified_memory.workflows import (
+    build_prompt,
+    build_verified_context,
+    extract_claims,
+    ingest_document,
+    validate_answer,
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -20,6 +26,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = _run_command(args)
     except SystemExit as exc:
         return int(exc.code or 0)
+    except ValidationCommandError as exc:
+        print(json.dumps(exc.payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 1
     except (OSError, ValueError, VerifiedMemoryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -64,6 +73,18 @@ def _build_parser() -> argparse.ArgumentParser:
     prompt_parser.add_argument("--include-archived", action="store_true")
     prompt_parser.add_argument("--format", choices=["json", "messages"], default="json")
 
+    validate_parser = subparsers.add_parser(
+        "validate-answer",
+        help="validate a candidate answer against verified-memory context",
+    )
+    validate_parser.add_argument("question")
+    validate_parser.add_argument("--db", required=True, help="SQLite database path")
+    validate_parser.add_argument("--answer")
+    validate_parser.add_argument("--answer-file")
+    validate_parser.add_argument("--max-chunks", type=int, default=5)
+    validate_parser.add_argument("--max-claims", type=int, default=5)
+    validate_parser.add_argument("--include-archived", action="store_true")
+
     stats_parser = subparsers.add_parser("stats", help="show local verified-memory counts")
     stats_parser.add_argument("--db", required=True, help="SQLite database path")
 
@@ -80,6 +101,8 @@ def _run_command(args: argparse.Namespace) -> dict[str, Any]:
         return _cmd_context(args, store)
     if args.command == "prompt":
         return _cmd_prompt(args, store)
+    if args.command == "validate-answer":
+        return _cmd_validate_answer(args, store)
     if args.command == "stats":
         return _cmd_stats(store)
     raise ValueError(f"unsupported command: {args.command}")
@@ -155,6 +178,31 @@ def _cmd_prompt(args: argparse.Namespace, store: SQLiteVerifiedMemoryStore) -> d
     payload = prompt.to_dict()
     payload["command"] = "prompt"
     return payload
+
+
+def _cmd_validate_answer(args: argparse.Namespace, store: SQLiteVerifiedMemoryStore) -> dict[str, Any]:
+    if (args.answer is None) == (args.answer_file is None):
+        raise ValueError("exactly one of --answer or --answer-file must be provided")
+    answer = args.answer if args.answer is not None else Path(args.answer_file).read_text(encoding="utf-8")
+    result = validate_answer(
+        args.question,
+        answer,
+        store,
+        max_chunks=args.max_chunks,
+        max_claims=args.max_claims,
+        include_archived=args.include_archived,
+    )
+    payload = result.to_dict()
+    payload["command"] = "validate-answer"
+    if result.severity == "error":
+        raise ValidationCommandError(payload)
+    return payload
+
+
+class ValidationCommandError(ValueError):
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__("answer validation failed")
+        self.payload = payload
 
 
 def _cmd_stats(store: SQLiteVerifiedMemoryStore) -> dict[str, Any]:
