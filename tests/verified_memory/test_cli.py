@@ -332,3 +332,101 @@ def test_validate_answer_command_does_not_import_or_call_llm_core(tmp_path, caps
     assert code == 0
     assert payload["metadata"]["answer_generated"] is False
     assert "src.llm_core" not in sys.modules
+
+
+def test_generate_answer_command_works_with_fake_generation(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+    ref = SQLiteVerifiedMemoryStore(db).list_document_chunks()[0].chunk_id
+
+    async def fake_generate_answer(question, store, **kwargs):
+        from verified_memory.workflows.generate_answer import generate_answer as real_generate_answer
+
+        async def fake_llm(messages, **llm_kwargs):
+            return f"Users must connect to Wi-Fi during OOBE. [{ref}]"
+
+        return await real_generate_answer(question, store, llm_call=fake_llm, **kwargs)
+
+    monkeypatch.setattr("verified_memory.cli.generate_answer", fake_generate_answer)
+
+    code, payload, _ = _run_cli([
+        "generate-answer",
+        "What does the SOP say about Wi-Fi?",
+        "--db",
+        str(db),
+    ], capsys)
+
+    assert code == 0
+    assert payload["command"] == "generate-answer"
+    assert payload["safe_to_show"] is True
+    assert payload["validation"]["severity"] == "pass"
+    assert payload["metadata"]["llm_called"] is True
+    assert payload["metadata"]["web_called"] is False
+
+
+def test_generate_answer_command_returns_nonzero_for_validation_errors(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+
+    async def fake_generate_answer(question, store, **kwargs):
+        from verified_memory.workflows.generate_answer import generate_answer as real_generate_answer
+
+        async def fake_llm(messages, **llm_kwargs):
+            return "Users must connect to Wi-Fi. [made-up:chunk:9999]"
+
+        return await real_generate_answer(question, store, llm_call=fake_llm, **kwargs)
+
+    monkeypatch.setattr("verified_memory.cli.generate_answer", fake_generate_answer)
+
+    code, payload, _ = _run_cli([
+        "generate-answer",
+        "What does the SOP say about Wi-Fi?",
+        "--db",
+        str(db),
+    ], capsys)
+
+    assert code != 0
+    assert payload["safe_to_show"] is False
+    assert payload["validation"]["severity"] == "error"
+    assert payload["validation"]["issues"][0]["code"] == "invented_citation"
+
+
+def test_generate_answer_format_answer_prints_answer_plus_validation(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+    ref = SQLiteVerifiedMemoryStore(db).list_document_chunks()[0].chunk_id
+
+    async def fake_generate_answer(question, store, **kwargs):
+        from verified_memory.workflows.generate_answer import generate_answer as real_generate_answer
+
+        async def fake_llm(messages, **llm_kwargs):
+            return f"Users must connect to Wi-Fi during OOBE. [{ref}]"
+
+        return await real_generate_answer(question, store, llm_call=fake_llm, **kwargs)
+
+    monkeypatch.setattr("verified_memory.cli.generate_answer", fake_generate_answer)
+
+    code = main([
+        "generate-answer",
+        "What does the SOP say about Wi-Fi?",
+        "--db",
+        str(db),
+        "--format",
+        "answer",
+    ])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "Users must connect to Wi-Fi during OOBE." in captured.out
+    assert "Validation: pass" in captured.out
+    assert "Safe to show: true" in captured.out
+    assert captured.err == ""

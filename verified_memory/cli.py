@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -15,6 +16,7 @@ from verified_memory.workflows import (
     build_verified_context,
     extract_claims,
     ingest_document,
+    generate_answer,
     validate_answer,
 )
 
@@ -27,12 +29,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as exc:
         return int(exc.code or 0)
     except ValidationCommandError as exc:
+        if exc.format == "answer":
+            print(_format_generated_answer(exc.payload, unsafe=True))
+        else:
+            print(json.dumps(exc.payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 1
+    except GenerationCommandError as exc:
         print(json.dumps(exc.payload, ensure_ascii=False, indent=2, sort_keys=True))
         return 1
     except (OSError, ValueError, VerifiedMemoryError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    if not (isinstance(payload, dict) and payload.get("_already_printed")):
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     return 0
 
 
@@ -85,6 +94,16 @@ def _build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--max-claims", type=int, default=5)
     validate_parser.add_argument("--include-archived", action="store_true")
 
+    generate_parser = subparsers.add_parser("generate-answer", help="generate and validate an answer from verified memory")
+    generate_parser.add_argument("question")
+    generate_parser.add_argument("--db", required=True, help="SQLite database path")
+    generate_parser.add_argument("--max-chunks", type=int, default=5)
+    generate_parser.add_argument("--max-claims", type=int, default=5)
+    generate_parser.add_argument("--include-archived", action="store_true")
+    generate_parser.add_argument("--model")
+    generate_parser.add_argument("--temperature", type=float, default=0.0)
+    generate_parser.add_argument("--format", choices=["json", "answer"], default="json")
+
     stats_parser = subparsers.add_parser("stats", help="show local verified-memory counts")
     stats_parser.add_argument("--db", required=True, help="SQLite database path")
 
@@ -103,6 +122,8 @@ def _run_command(args: argparse.Namespace) -> dict[str, Any]:
         return _cmd_prompt(args, store)
     if args.command == "validate-answer":
         return _cmd_validate_answer(args, store)
+    if args.command == "generate-answer":
+        return _cmd_generate_answer(args, store)
     if args.command == "stats":
         return _cmd_stats(store)
     raise ValueError(f"unsupported command: {args.command}")
@@ -199,9 +220,60 @@ def _cmd_validate_answer(args: argparse.Namespace, store: SQLiteVerifiedMemorySt
     return payload
 
 
+def _cmd_generate_answer(args: argparse.Namespace, store: SQLiteVerifiedMemoryStore) -> dict[str, Any]:
+    try:
+        result = asyncio.run(
+            generate_answer(
+                args.question,
+                store,
+                max_chunks=args.max_chunks,
+                max_claims=args.max_claims,
+                include_archived=args.include_archived,
+                model=args.model,
+                temperature=args.temperature,
+            )
+        )
+    except Exception as exc:
+        raise GenerationCommandError({
+            "command": "generate-answer",
+            "error": str(exc),
+            "safe_to_show": False,
+            "metadata": {"llm_called": True, "web_called": False, "generation_failed": True},
+        }) from exc
+    payload = result.to_dict()
+    payload["command"] = "generate-answer"
+    if args.format == "answer":
+        if not result.safe_to_show:
+            raise ValidationCommandError(payload, format="answer")
+        print(_format_generated_answer(payload, unsafe=False))
+        return {"_already_printed": True}
+    if not result.safe_to_show:
+        raise ValidationCommandError(payload)
+    return payload
+
+
+def _format_generated_answer(payload: dict[str, Any], *, unsafe: bool = False) -> str:
+    validation = payload.get("validation") or payload.get("validation_result") or {}
+    lines = [str(payload.get("answer", "")), ""]
+    if unsafe:
+        lines.append("Unsafe answer: validation failed; do not show this answer to users.")
+    lines.extend([
+        f"Validation: {validation.get('severity')}",
+        f"Safe to show: {str(bool(payload.get('safe_to_show'))).lower()}",
+    ])
+    return "\n".join(lines)
+
+
 class ValidationCommandError(ValueError):
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: dict[str, Any], *, format: str = "json") -> None:
         super().__init__("answer validation failed")
+        self.payload = payload
+        self.format = format
+
+
+class GenerationCommandError(ValueError):
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__("answer generation failed")
         self.payload = payload
 
 
