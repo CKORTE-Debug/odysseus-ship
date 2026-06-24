@@ -36,6 +36,9 @@ class VerifiedMemoryAnswerResponse:
     answer: str
     safe_to_show: bool
     validation: dict[str, Any]
+    operation: str = "generate_answer"
+    validation_severity: str | None = None
+    audit: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     prompt_metadata: dict[str, Any] = field(default_factory=dict)
     generation_metadata: dict[str, Any] = field(default_factory=dict)
@@ -47,6 +50,9 @@ class VerifiedMemoryAnswerResponse:
             "answer": self.answer,
             "safe_to_show": self.safe_to_show,
             "validation": dict(self.validation),
+            "operation": self.operation,
+            "validation_severity": self.validation_severity,
+            "audit": dict(self.audit),
             "warnings": list(self.warnings),
             "prompt_metadata": dict(self.prompt_metadata),
             "generation_metadata": dict(self.generation_metadata),
