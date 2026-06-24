@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from verified_memory.contracts import VerifiedMemoryAnswerRequest, VerifiedMemoryAnswerResponse
+from verified_memory.contracts import (
+    VerifiedMemoryAnswerRequest,
+    VerifiedMemoryAnswerResponse,
+    VerifiedMemoryServiceEnvelope,
+)
 from verified_memory.storage import SQLiteVerifiedMemoryStore
 from verified_memory.workflows.build_prompt import build_prompt as build_prompt_workflow
 from verified_memory.workflows.build_verified_context import build_verified_context as build_context_workflow
@@ -36,6 +40,14 @@ class VerifiedMemoryService:
     @classmethod
     def from_db_path(cls, path: str | Path) -> "VerifiedMemoryService":
         return cls(SQLiteVerifiedMemoryStore(path))
+
+    def envelope(self, payload: dict[str, Any], *, operation: str) -> VerifiedMemoryServiceEnvelope:
+        return VerifiedMemoryServiceEnvelope.success(
+            operation,
+            payload,
+            audit=dict(payload.get("audit", {})),
+            metadata={"service_boundary": "VerifiedMemoryService"},
+        )
 
     def ingest_document(self, path: str | Path, *, replace_existing: bool = True) -> dict[str, Any]:
         operation = "ingest_document"
