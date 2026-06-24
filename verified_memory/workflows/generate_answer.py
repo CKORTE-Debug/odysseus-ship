@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from verified_memory.config import VerifiedMemoryGenerationConfig
 from verified_memory.generation import GeneratedAnswerResult, generate_answer_from_prompt
 from verified_memory.storage import SQLiteVerifiedMemoryStore
 from verified_memory.workflows.build_prompt import build_prompt
@@ -18,7 +19,8 @@ async def generate_answer(
     max_claims: int = 5,
     include_archived: bool = False,
     model: str | None = None,
-    temperature: float = 0.0,
+    temperature: float | None = None,
+    config: VerifiedMemoryGenerationConfig | None = None,
     llm_call: Callable[..., Any] | None = None,
 ) -> GeneratedAnswerResult:
     """Build a prompt, generate one candidate answer, and validate it."""
@@ -32,6 +34,7 @@ async def generate_answer(
     )
     return await generate_answer_from_prompt(
         prompt,
+        config=config,
         llm_call=llm_call,
         model=model,
         temperature=temperature,

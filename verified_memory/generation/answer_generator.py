@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import inspect
-import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from verified_memory.config import VerifiedMemoryGenerationConfig
 from verified_memory.prompting import VerifiedMemoryPrompt
 from verified_memory.validation import AnswerValidationResult, validate_answer_against_prompt
 
@@ -38,38 +38,61 @@ class GeneratedAnswerResult:
 async def generate_answer_from_prompt(
     prompt: VerifiedMemoryPrompt,
     *,
+    config: VerifiedMemoryGenerationConfig | None = None,
     llm_call: Callable[..., Any] | None = None,
     model: str | None = None,
-    temperature: float = 0.0,
+    temperature: float | None = None,
 ) -> GeneratedAnswerResult:
     """Generate and validate one candidate answer from an existing safe prompt."""
 
-    selected_model = model or os.getenv("VERIFIED_MEMORY_LLM_MODEL") or os.getenv("LLM_MODEL") or ""
+    if config is None:
+        config = (
+            VerifiedMemoryGenerationConfig(model=model or "", temperature=0.0 if temperature is None else temperature)
+            if llm_call is not None
+            else VerifiedMemoryGenerationConfig.from_env()
+        )
+    elif model is not None or temperature is not None:
+        config = VerifiedMemoryGenerationConfig(
+            model=model if model is not None else config.model,
+            endpoint_url=config.endpoint_url,
+            temperature=temperature if temperature is not None else config.temperature,
+            max_tokens=config.max_tokens,
+            timeout_seconds=config.timeout_seconds,
+            allow_network_llm=config.allow_network_llm,
+            provider=config.provider,
+            metadata=dict(config.metadata),
+        )
+
+    config.validate(llm_call_provided=llm_call is not None)
     warnings = list(prompt.warnings)
     metadata: dict[str, Any] = {
         "llm_called": False,
         "web_called": False,
-        "generation_model": selected_model or None,
-        "temperature": temperature,
+        "generation_model": config.model or None,
+        "provider": config.provider,
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+        "timeout_seconds": config.timeout_seconds,
+        "allow_network_llm": config.allow_network_llm,
+        "config_validated": True,
     }
 
     if llm_call is None:
-        endpoint_url = os.getenv("VERIFIED_MEMORY_LLM_URL") or os.getenv("LLM_ENDPOINT_URL") or os.getenv("LLM_URL")
-        if not endpoint_url or not selected_model:
-            raise ValueError(
-                "verified-memory answer generation requires llm_call injection or VERIFIED_MEMORY_LLM_URL/LLM_ENDPOINT_URL "
-                "and VERIFIED_MEMORY_LLM_MODEL/LLM_MODEL environment variables"
-            )
         from src.llm_core import llm_call_async as odysseus_llm_call_async
 
         async def default_llm_call(messages: list[dict[str, str]], **kwargs: Any) -> str:
-            return await odysseus_llm_call_async(endpoint_url, kwargs["model"], messages, temperature=kwargs["temperature"])
+            return await odysseus_llm_call_async(
+                config.endpoint_url,
+                kwargs["model"],
+                messages,
+                temperature=kwargs["temperature"],
+            )
 
         llm_call = default_llm_call
 
     metadata["llm_called"] = True
     try:
-        raw_answer = llm_call(prompt.messages, model=selected_model or model, temperature=temperature)
+        raw_answer = llm_call(prompt.messages, model=config.model or None, temperature=config.temperature, max_tokens=config.max_tokens, timeout_seconds=config.timeout_seconds)
         answer = await raw_answer if inspect.isawaitable(raw_answer) else raw_answer
     except Exception:
         metadata["generation_failed"] = True

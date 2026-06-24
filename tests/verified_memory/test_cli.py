@@ -430,3 +430,123 @@ def test_generate_answer_format_answer_prints_answer_plus_validation(tmp_path, c
     assert "Validation: pass" in captured.out
     assert "Safe to show: true" in captured.out
     assert captured.err == ""
+
+def test_generate_answer_without_allow_network_returns_structured_error(tmp_path, capsys):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+
+    code, payload, _ = _run_cli([
+        "generate-answer",
+        "What does the SOP say about Wi-Fi?",
+        "--db",
+        str(db),
+        "--model",
+        "local-model",
+        "--endpoint-url",
+        "http://localhost:11434",
+    ], capsys)
+
+    assert code != 0
+    assert payload["command"] == "generate-answer"
+    assert "allow_network_llm=true" in payload["error"]
+    assert payload["metadata"]["llm_called"] is False
+    assert payload["metadata"]["web_called"] is False
+
+
+def test_generate_answer_with_invalid_temperature_rejects_before_llm(tmp_path, capsys):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+
+    code, payload, _ = _run_cli([
+        "generate-answer",
+        "What does the SOP say about Wi-Fi?",
+        "--db",
+        str(db),
+        "--model",
+        "local-model",
+        "--endpoint-url",
+        "http://localhost:11434",
+        "--allow-network-llm",
+        "--temperature",
+        "2.0",
+    ], capsys)
+
+    assert code != 0
+    assert "temperature" in payload["error"]
+    assert payload["metadata"]["llm_called"] is False
+
+
+def test_generate_answer_cli_includes_config_metadata_in_output(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+    ref = SQLiteVerifiedMemoryStore(db).list_document_chunks()[0].chunk_id
+
+    async def fake_generate_answer(question, store, **kwargs):
+        from verified_memory.workflows.generate_answer import generate_answer as real_generate_answer
+
+        async def fake_llm(messages, **llm_kwargs):
+            return f"Users must connect to Wi-Fi during OOBE. [{ref}]"
+
+        return await real_generate_answer(question, store, llm_call=fake_llm, **kwargs)
+
+    monkeypatch.setattr("verified_memory.cli.generate_answer", fake_generate_answer)
+
+    code, payload, _ = _run_cli([
+        "generate-answer",
+        "What does the SOP say about Wi-Fi?",
+        "--db",
+        str(db),
+        "--model",
+        "fake-model",
+        "--temperature",
+        "0.2",
+        "--max-tokens",
+        "50",
+        "--timeout-seconds",
+        "3",
+        "--provider",
+        "fake-provider",
+    ], capsys)
+
+    assert code == 0
+    assert payload["metadata"]["generation_model"] == "fake-model"
+    assert payload["metadata"]["temperature"] == 0.2
+    assert payload["metadata"]["max_tokens"] == 50
+    assert payload["metadata"]["timeout_seconds"] == 3.0
+    assert payload["metadata"]["provider"] == "fake-provider"
+    assert payload["metadata"]["allow_network_llm"] is False
+
+
+def test_generate_answer_does_not_import_web_search_or_chromadb(tmp_path, capsys, monkeypatch):
+    db = tmp_path / "vm.sqlite3"
+    document = tmp_path / "sop.txt"
+    document.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    main(["ingest", str(document), "--db", str(db)])
+    capsys.readouterr()
+    ref = SQLiteVerifiedMemoryStore(db).list_document_chunks()[0].chunk_id
+    for name in ["chromadb", "src.search", "src.research", "src.web"]:
+        sys.modules.pop(name, None)
+
+    async def fake_generate_answer(question, store, **kwargs):
+        from verified_memory.workflows.generate_answer import generate_answer as real_generate_answer
+
+        async def fake_llm(messages, **llm_kwargs):
+            return f"Users must connect to Wi-Fi during OOBE. [{ref}]"
+
+        return await real_generate_answer(question, store, llm_call=fake_llm, **kwargs)
+
+    monkeypatch.setattr("verified_memory.cli.generate_answer", fake_generate_answer)
+    code, payload, _ = _run_cli(["generate-answer", "Wi-Fi", "--db", str(db)], capsys)
+
+    assert code == 0
+    assert payload["metadata"]["web_called"] is False
+    assert all(name not in sys.modules for name in ["chromadb", "src.search", "src.research", "src.web"])
