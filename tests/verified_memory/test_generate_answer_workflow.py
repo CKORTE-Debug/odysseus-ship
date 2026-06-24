@@ -66,3 +66,23 @@ async def test_workflow_does_not_call_web_or_network(tmp_path, monkeypatch):
 
     assert result.metadata["web_called"] is False
     assert result.metadata["llm_called"] is True
+
+@pytest.mark.asyncio
+async def test_workflow_accepts_config_and_passes_it_through(tmp_path):
+    from verified_memory.config import VerifiedMemoryGenerationConfig
+
+    store = _store_with_doc(tmp_path)
+    ref = store.list_document_chunks()[0].chunk_id
+    seen = {}
+
+    async def fake_llm(messages, **kwargs):
+        seen.update(kwargs)
+        return f"Users must connect to Wi-Fi during OOBE. [{ref}]"
+
+    config = VerifiedMemoryGenerationConfig(model="fake", temperature=0.4, max_tokens=25, provider="test")
+    result = await generate_answer("Wi-Fi?", store, config=config, llm_call=fake_llm)
+
+    assert result.safe_to_show is True
+    assert seen["model"] == "fake"
+    assert seen["temperature"] == 0.4
+    assert result.metadata["provider"] == "test"

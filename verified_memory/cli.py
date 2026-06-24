@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from verified_memory.config import VerifiedMemoryGenerationConfig
 from verified_memory.errors import VerifiedMemoryError
 from verified_memory.storage import SQLiteVerifiedMemoryStore
 from verified_memory.workflows import (
@@ -101,7 +102,12 @@ def _build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--max-claims", type=int, default=5)
     generate_parser.add_argument("--include-archived", action="store_true")
     generate_parser.add_argument("--model")
-    generate_parser.add_argument("--temperature", type=float, default=0.0)
+    generate_parser.add_argument("--temperature", type=float)
+    generate_parser.add_argument("--endpoint-url")
+    generate_parser.add_argument("--max-tokens", type=int)
+    generate_parser.add_argument("--timeout-seconds", type=float)
+    generate_parser.add_argument("--allow-network-llm", action="store_true")
+    generate_parser.add_argument("--provider")
     generate_parser.add_argument("--format", choices=["json", "answer"], default="json")
 
     stats_parser = subparsers.add_parser("stats", help="show local verified-memory counts")
@@ -221,6 +227,17 @@ def _cmd_validate_answer(args: argparse.Namespace, store: SQLiteVerifiedMemorySt
 
 
 def _cmd_generate_answer(args: argparse.Namespace, store: SQLiteVerifiedMemoryStore) -> dict[str, Any]:
+    env_config = VerifiedMemoryGenerationConfig.from_env()
+    config = VerifiedMemoryGenerationConfig(
+        model=args.model if args.model is not None else env_config.model,
+        endpoint_url=args.endpoint_url if args.endpoint_url is not None else env_config.endpoint_url,
+        temperature=args.temperature if args.temperature is not None else env_config.temperature,
+        max_tokens=args.max_tokens if args.max_tokens is not None else env_config.max_tokens,
+        timeout_seconds=args.timeout_seconds if args.timeout_seconds is not None else env_config.timeout_seconds,
+        allow_network_llm=bool(args.allow_network_llm or env_config.allow_network_llm),
+        provider=args.provider if args.provider is not None else env_config.provider,
+        metadata=dict(env_config.metadata),
+    )
     try:
         result = asyncio.run(
             generate_answer(
@@ -229,8 +246,7 @@ def _cmd_generate_answer(args: argparse.Namespace, store: SQLiteVerifiedMemorySt
                 max_chunks=args.max_chunks,
                 max_claims=args.max_claims,
                 include_archived=args.include_archived,
-                model=args.model,
-                temperature=args.temperature,
+                config=config,
             )
         )
     except Exception as exc:
@@ -238,7 +254,12 @@ def _cmd_generate_answer(args: argparse.Namespace, store: SQLiteVerifiedMemorySt
             "command": "generate-answer",
             "error": str(exc),
             "safe_to_show": False,
-            "metadata": {"llm_called": True, "web_called": False, "generation_failed": True},
+            "metadata": {
+                "llm_called": False,
+                "web_called": False,
+                "generation_failed": True,
+                "config": config.to_dict(),
+            },
         }) from exc
     payload = result.to_dict()
     payload["command"] = "generate-answer"
