@@ -167,6 +167,187 @@ def test_route_source_does_not_call_forbidden_integrations():
             elif isinstance(func, ast.Attribute):
                 called.add(func.attr)
     forbidden_imports = {"src.llm_core", "src.memory", "chromadb", "routes.search_routes", "routes.research_routes"}
-    forbidden_calls = {"generate_answer", "ingest_document", "extract_claims", "web_search", "research", "ChromaDB"}
+    forbidden_calls = {"generate_answer", "web_search", "research", "ChromaDB"}
     assert forbidden_imports.isdisjoint(imported)
     assert forbidden_calls.isdisjoint(called)
+
+
+def test_health_route_shows_admin_routes_disabled_by_default(client):
+    capabilities = client.get("/api/verified-memory/health").json()["capabilities"]
+    assert capabilities["admin_routes_enabled"] is False
+    assert capabilities["ingest_document"] is False
+    assert capabilities["extract_claims"] is False
+
+
+def test_health_route_shows_admin_routes_enabled_when_opted_in(client, monkeypatch):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    capabilities = client.get("/api/verified-memory/health").json()["capabilities"]
+    assert capabilities["admin_routes_enabled"] is True
+    assert capabilities["ingest_document"] is True
+    assert capabilities["extract_claims"] is True
+    assert capabilities["generate_answer"] is False
+
+
+def test_admin_ingest_route_returns_structured_disabled_error_by_default(client, tmp_path):
+    doc = tmp_path / "sop.txt"
+    doc.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    response = client.post("/api/verified-memory/admin/ingest", json={"db_path": str(tmp_path / "vm.sqlite3"), "path": str(doc), "confirm_mutation": True})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["operation"] == "admin_ingest_document"
+    assert body["ok"] is False
+    assert body["error"]["code"] == "admin_routes_disabled"
+    assert body["audit"]["mutation_attempted"] is False
+    assert body["audit"]["mutation_performed"] is False
+
+
+def test_admin_extract_route_returns_structured_disabled_error_by_default(client, tmp_path):
+    response = client.post("/api/verified-memory/admin/extract-claims", json={"db_path": str(tmp_path / "vm.sqlite3"), "confirm_mutation": True})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["operation"] == "admin_extract_claims"
+    assert body["ok"] is False
+    assert body["error"]["code"] == "admin_routes_disabled"
+    assert body["audit"]["mutation_attempted"] is False
+    assert body["audit"]["mutation_performed"] is False
+
+
+def test_disabled_admin_ingest_does_not_call_service(client, fake_service, tmp_path):
+    doc = tmp_path / "sop.txt"
+    doc.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    response = client.post("/api/verified-memory/admin/ingest", json={"db_path": "vm.db", "path": str(doc), "confirm_mutation": True})
+    assert response.status_code == 200
+    assert fake_service.calls == []
+
+
+def test_disabled_admin_extract_does_not_call_service(client, fake_service):
+    response = client.post("/api/verified-memory/admin/extract-claims", json={"db_path": "vm.db", "confirm_mutation": True})
+    assert response.status_code == 200
+    assert fake_service.calls == []
+
+
+def test_enabled_admin_ingest_requires_confirm_mutation(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    doc = tmp_path / "sop.txt"
+    doc.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    response = client.post("/api/verified-memory/admin/ingest", json={"db_path": str(tmp_path / "vm.sqlite3"), "path": str(doc)})
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["code"] == "mutation_not_confirmed"
+
+
+def test_enabled_admin_extract_requires_confirm_mutation(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    response = client.post("/api/verified-memory/admin/extract-claims", json={"db_path": str(tmp_path / "vm.sqlite3")})
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["code"] == "mutation_not_confirmed"
+
+
+def test_enabled_admin_ingest_rejects_missing_db_path(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    doc = tmp_path / "sop.txt"
+    doc.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    response = client.post("/api/verified-memory/admin/ingest", json={"path": str(doc), "confirm_mutation": True})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("bad_path", ["https://example.com/sop.txt", "http://example.com/sop.md"])
+def test_enabled_admin_ingest_rejects_url_paths(client, monkeypatch, bad_path, tmp_path):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    response = client.post("/api/verified-memory/admin/ingest", json={"db_path": str(tmp_path / "vm.sqlite3"), "path": bad_path, "confirm_mutation": True})
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["code"] == "invalid_path"
+
+
+@pytest.mark.parametrize("name", ["sop.pdf", "sop.docx", "sop.html"])
+def test_enabled_admin_ingest_rejects_unsupported_extensions(client, monkeypatch, name, tmp_path):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    response = client.post("/api/verified-memory/admin/ingest", json={"db_path": str(tmp_path / "vm.sqlite3"), "path": str(tmp_path / name), "confirm_mutation": True})
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["code"] == "unsupported_file_type"
+
+
+def test_enabled_admin_extract_rejects_allowed_web_search(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    response = client.post("/api/verified-memory/admin/extract-claims", json={"db_path": str(tmp_path / "vm.sqlite3"), "allowed_web_search": True, "confirm_mutation": True})
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["code"] == "web_search_not_allowed"
+
+
+def test_enabled_admin_ingest_calls_ingest_document_only(client, fake_service, monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    doc = tmp_path / "sop.txt"
+    doc.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    def ingest_document(self, path, *, replace_existing=True):
+        self.calls.append(("ingest_document", self.db_path, path, replace_existing))
+        return {"operation": "ingest_document", "document_id": "doc_1", "chunk_ids": ["chunk_1"], "chunks_created": 1, "audit": {"llm_called": False, "web_called": False}}
+    monkeypatch.setattr(FakeService, "ingest_document", ingest_document, raising=False)
+    response = client.post("/api/verified-memory/admin/ingest", json={"db_path": "vm.db", "path": str(doc), "confirm_mutation": True})
+    assert response.status_code == 200
+    assert fake_service.calls == [("ingest_document", "vm.db", str(doc), True)]
+    assert response.json()["payload"]["chunks_created"] == 1
+
+
+def test_enabled_admin_extract_calls_extract_claims_only(client, fake_service, monkeypatch):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    def extract_claims(self, *, document_id=None, chunk_ids=None, default_sensitivity="private", allowed_web_search=False):
+        self.calls.append(("extract_claims", self.db_path, document_id, chunk_ids, default_sensitivity, allowed_web_search))
+        return {"operation": "extract_claims", "claim_ids": ["claim_1"], "claims_created": 1, "audit": {"llm_called": False, "web_called": False}}
+    monkeypatch.setattr(FakeService, "extract_claims", extract_claims, raising=False)
+    response = client.post("/api/verified-memory/admin/extract-claims", json={"db_path": "vm.db", "document_id": "doc_1", "confirm_mutation": True})
+    assert response.status_code == 200
+    assert fake_service.calls == [("extract_claims", "vm.db", "doc_1", None, "private", False)]
+    assert response.json()["payload"]["claims_created"] == 1
+
+
+def test_enabled_admin_ingest_with_temp_txt_creates_chunks(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    doc = tmp_path / "sop.txt"
+    doc.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    response = client.post("/api/verified-memory/admin/ingest", json={"db_path": str(tmp_path / "vm.sqlite3"), "path": str(doc), "confirm_mutation": True})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["payload"]["chunks_created"] >= 1
+    assert body["audit"]["mutation_performed"] is True
+    assert body["audit"]["web_called"] is False
+    assert body["audit"]["llm_called"] is False
+
+
+def test_enabled_admin_extract_after_ingest_creates_candidate_claims(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    doc = tmp_path / "sop.md"
+    doc.write_text("- Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    db_path = tmp_path / "vm.sqlite3"
+    ingest_response = client.post("/api/verified-memory/admin/ingest", json={"db_path": str(db_path), "path": str(doc), "confirm_mutation": True})
+    document_id = ingest_response.json()["payload"]["document_id"]
+    response = client.post("/api/verified-memory/admin/extract-claims", json={"db_path": str(db_path), "document_id": document_id, "confirm_mutation": True})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["payload"]["claims_created"] >= 1
+    assert body["audit"]["mutation_performed"] is True
+    assert body["audit"]["web_called"] is False
+    assert body["audit"]["llm_called"] is False
+
+
+def test_admin_route_responses_are_json_serializable(client, monkeypatch, tmp_path):
+    doc = tmp_path / "sop.txt"
+    doc.write_text("Users must connect to Wi-Fi during OOBE.\n", encoding="utf-8")
+    responses = [client.post("/api/verified-memory/admin/ingest", json={"db_path": str(tmp_path / "disabled.sqlite3"), "path": str(doc), "confirm_mutation": True}).json()]
+    monkeypatch.setenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "true")
+    responses.append(client.post("/api/verified-memory/admin/ingest", json={"db_path": str(tmp_path / "enabled.sqlite3"), "path": str(doc), "confirm_mutation": True}).json())
+    for body in responses:
+        json.dumps(body)
+
+
+def test_route_source_does_not_call_generation():
+    tree = ast.parse(ROUTE_PATH.read_text(encoding="utf-8"))
+    called = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                called.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                called.add(func.attr)
+    assert "generate_answer" not in called
