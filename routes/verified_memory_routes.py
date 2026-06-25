@@ -1,13 +1,17 @@
-"""Read-only verified-memory API routes.
+"""Verified-memory API routes.
 
-This router is intentionally conservative: it exposes only deterministic,
-read-only service-boundary operations and does not import legacy memory, LLM,
-search/research, ChromaDB, ingestion, extraction, or generation modules.
+This router is intentionally conservative: it exposes deterministic read-only
+service-boundary operations plus tightly gated admin write operations. It does
+not import legacy memory, LLM, search/research, ChromaDB, ingestion, extraction,
+or generation modules.
 """
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,11 +44,32 @@ class VerifiedMemoryValidateAnswerRequest(_ReadOnlyRequest):
     answer: str = Field(..., min_length=1)
 
 
+class VerifiedMemoryIngestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    db_path: str = Field(..., min_length=1)
+    path: str = Field(..., min_length=1)
+    replace_existing: bool = True
+    confirm_mutation: bool = False
+
+
+class VerifiedMemoryExtractClaimsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    db_path: str = Field(..., min_length=1)
+    document_id: str | None = None
+    chunk_ids: list[str] | None = None
+    default_sensitivity: str = "private"
+    allowed_web_search: bool = False
+    confirm_mutation: bool = False
+
+
 _CAPABILITIES: dict[str, bool] = {
     "build_context": True,
     "build_prompt": True,
     "validate_answer": True,
     "generate_answer": False,
+    "admin_routes_enabled": False,
     "ingest_document": False,
     "extract_claims": False,
     "web_verification": False,
@@ -79,6 +104,74 @@ def _envelope(payload: dict[str, Any], *, operation: str) -> dict[str, Any]:
     ).to_dict()
 
 
+def _admin_routes_enabled() -> bool:
+    return os.getenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "").strip().lower() in {"true", "1", "yes"}
+
+
+def _capabilities() -> dict[str, bool]:
+    capabilities = dict(_CAPABILITIES)
+    enabled = _admin_routes_enabled()
+    capabilities["admin_routes_enabled"] = enabled
+    capabilities["ingest_document"] = enabled
+    capabilities["extract_claims"] = enabled
+    return capabilities
+
+
+def _failure(operation: str, code: str, message: str, *, mutation_attempted: bool = False) -> dict[str, Any]:
+    return VerifiedMemoryServiceEnvelope.failure(
+        operation,
+        {"code": code, "message": message},
+        audit={
+            "operation": operation,
+            "mutation_attempted": mutation_attempted,
+            "mutation_performed": False,
+            "web_called": False,
+            "llm_called": False,
+        },
+        metadata={"service_boundary": "VerifiedMemoryService"},
+    ).to_dict()
+
+
+def _admin_disabled(operation: str) -> dict[str, Any]:
+    return _failure(operation, "admin_routes_disabled", "Verified-memory admin routes are disabled.")
+
+
+def _validate_local_text_path(path: str, *, operation: str) -> None:
+    parsed = urlparse(path)
+    if parsed.scheme or parsed.netloc:
+        raise HTTPException(status_code=400, detail=_failure(operation, "invalid_path", "path must be a local .txt or .md file path.", mutation_attempted=True))
+    suffix = Path(path).suffix.lower()
+    if suffix not in {".txt", ".md"}:
+        raise HTTPException(status_code=400, detail=_failure(operation, "unsupported_file_type", "Only local .txt and .md documents are supported.", mutation_attempted=True))
+
+
+def _require_confirmation(confirm_mutation: bool, *, operation: str) -> None:
+    if confirm_mutation is not True:
+        raise HTTPException(status_code=400, detail=_failure(operation, "mutation_not_confirmed", "confirm_mutation must be true for verified-memory admin write routes.", mutation_attempted=True))
+
+
+def _admin_envelope(payload: dict[str, Any], *, operation: str) -> dict[str, Any]:
+    audit = {
+        "operation": operation,
+        "mutation_attempted": True,
+        "mutation_performed": True,
+        "web_called": False,
+        "llm_called": False,
+        **dict(payload.get("audit", {})),
+    }
+    audit["operation"] = operation
+    audit["mutation_attempted"] = True
+    audit["mutation_performed"] = True
+    audit["web_called"] = False
+    audit["llm_called"] = False
+    return VerifiedMemoryServiceEnvelope.success(
+        operation,
+        payload,
+        audit=audit,
+        metadata={"service_boundary": "VerifiedMemoryService", "admin_write": True},
+    ).to_dict()
+
+
 def setup_verified_memory_routes() -> APIRouter:
     router = APIRouter(prefix="/api/verified-memory", tags=["verified-memory"])
 
@@ -87,7 +180,7 @@ def setup_verified_memory_routes() -> APIRouter:
         return {
             "operation": "verified_memory_health",
             "ok": True,
-            "capabilities": dict(_CAPABILITIES),
+            "capabilities": _capabilities(),
         }
 
     @router.post("/context")
@@ -135,5 +228,46 @@ def setup_verified_memory_routes() -> APIRouter:
         except VerifiedMemoryServiceError as exc:
             raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
         return _envelope(payload, operation=operation)
+
+
+    @router.post("/admin/ingest")
+    async def admin_ingest_document(request: VerifiedMemoryIngestRequest) -> dict[str, Any]:
+        operation = "admin_ingest_document"
+        if not _admin_routes_enabled():
+            return _admin_disabled(operation)
+        _require_confirmation(request.confirm_mutation, operation=operation)
+        _validate_local_text_path(request.path, operation=operation)
+        service = _service_from_request(request.db_path, operation=operation)
+        try:
+            payload = service.ingest_document(request.path, replace_existing=request.replace_existing)
+        except VerifiedMemoryServiceError as exc:
+            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=_failure(operation, "ingest_document_failed", str(exc), mutation_attempted=True)) from exc
+        return _admin_envelope(payload, operation=operation)
+
+    @router.post("/admin/extract-claims")
+    async def admin_extract_claims(request: VerifiedMemoryExtractClaimsRequest) -> dict[str, Any]:
+        operation = "admin_extract_claims"
+        if not _admin_routes_enabled():
+            return _admin_disabled(operation)
+        _require_confirmation(request.confirm_mutation, operation=operation)
+        if request.allowed_web_search is True:
+            raise HTTPException(status_code=400, detail=_failure(operation, "web_search_not_allowed", "allowed_web_search must remain false for route-based claim extraction.", mutation_attempted=True))
+        if request.default_sensitivity not in {"private", "public"}:
+            raise HTTPException(status_code=400, detail=_failure(operation, "invalid_sensitivity", "default_sensitivity must be private or public.", mutation_attempted=True))
+        service = _service_from_request(request.db_path, operation=operation)
+        try:
+            payload = service.extract_claims(
+                document_id=request.document_id,
+                chunk_ids=request.chunk_ids,
+                default_sensitivity=request.default_sensitivity,
+                allowed_web_search=False,
+            )
+        except VerifiedMemoryServiceError as exc:
+            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=_failure(operation, "extract_claims_failed", str(exc), mutation_attempted=True)) from exc
+        return _admin_envelope(payload, operation=operation)
 
     return router
