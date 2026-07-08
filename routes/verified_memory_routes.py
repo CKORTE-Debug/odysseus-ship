@@ -82,15 +82,11 @@ def _service_from_request(db_path: str | None, *, operation: str) -> VerifiedMem
     if not db_path:
         raise HTTPException(
             status_code=400,
-            detail=VerifiedMemoryServiceEnvelope.failure(
+            detail=_failure(
                 operation,
-                {
-                    "code": "missing_db_path",
-                    "message": "db_path is required because no verified-memory API default database path is configured.",
-                },
-                audit={"operation": operation},
-                metadata={"service_boundary": "VerifiedMemoryService"},
-            ).to_dict(),
+                "missing_db_path",
+                "db_path is required because no verified-memory API default database path is configured.",
+            ),
         )
     return VerifiedMemoryService.from_db_path(db_path)
 
@@ -117,19 +113,41 @@ def _capabilities() -> dict[str, bool]:
     return capabilities
 
 
-def _failure(operation: str, code: str, message: str, *, mutation_attempted: bool = False) -> dict[str, Any]:
+_SERVICE_ERROR_CODES = {
+    "build_context": "context_failed",
+    "build_prompt": "prompt_failed",
+    "validate_answer": "validate_answer_failed",
+    "admin_ingest_document": "ingest_document_failed",
+    "admin_extract_claims": "extract_claims_failed",
+}
+
+
+def _failure(operation: str, code: str, message: str, *, mutation_attempted: bool = False, audit: dict[str, Any] | None = None) -> dict[str, Any]:
+    error_audit = {
+        "operation": operation,
+        "mutation_attempted": mutation_attempted,
+        "mutation_performed": False,
+        "web_called": False,
+        "llm_called": False,
+    }
+    error_audit.update(audit or {})
+    error_audit["operation"] = operation
     return VerifiedMemoryServiceEnvelope.failure(
         operation,
         {"code": code, "message": message},
-        audit={
-            "operation": operation,
-            "mutation_attempted": mutation_attempted,
-            "mutation_performed": False,
-            "web_called": False,
-            "llm_called": False,
-        },
+        audit=error_audit,
         metadata={"service_boundary": "VerifiedMemoryService"},
     ).to_dict()
+
+
+def _service_failure(operation: str, exc: VerifiedMemoryServiceError, *, mutation_attempted: bool = False) -> dict[str, Any]:
+    return _failure(
+        operation,
+        _SERVICE_ERROR_CODES[operation],
+        str(exc),
+        mutation_attempted=mutation_attempted,
+        audit=dict(getattr(exc, "audit", {})),
+    )
 
 
 def _admin_disabled(operation: str) -> dict[str, Any]:
@@ -195,7 +213,7 @@ def setup_verified_memory_routes() -> APIRouter:
                 include_archived=request.include_archived,
             )
         except VerifiedMemoryServiceError as exc:
-            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+            raise HTTPException(status_code=400, detail=_service_failure(operation, exc)) from exc
         return _envelope(payload, operation=operation)
 
     @router.post("/prompt")
@@ -210,7 +228,7 @@ def setup_verified_memory_routes() -> APIRouter:
                 include_archived=request.include_archived,
             )
         except VerifiedMemoryServiceError as exc:
-            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+            raise HTTPException(status_code=400, detail=_service_failure(operation, exc)) from exc
         return _envelope(payload, operation=operation)
 
     @router.post("/validate-answer")
@@ -226,7 +244,7 @@ def setup_verified_memory_routes() -> APIRouter:
                 include_archived=request.include_archived,
             )
         except VerifiedMemoryServiceError as exc:
-            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+            raise HTTPException(status_code=400, detail=_service_failure(operation, exc)) from exc
         return _envelope(payload, operation=operation)
 
 
@@ -234,14 +252,14 @@ def setup_verified_memory_routes() -> APIRouter:
     async def admin_ingest_document(request: VerifiedMemoryIngestRequest) -> dict[str, Any]:
         operation = "admin_ingest_document"
         if not _admin_routes_enabled():
-            return _admin_disabled(operation)
+            raise HTTPException(status_code=403, detail=_admin_disabled(operation))
         _require_confirmation(request.confirm_mutation, operation=operation)
         _validate_local_text_path(request.path, operation=operation)
         service = _service_from_request(request.db_path, operation=operation)
         try:
             payload = service.ingest_document(request.path, replace_existing=request.replace_existing)
         except VerifiedMemoryServiceError as exc:
-            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+            raise HTTPException(status_code=400, detail=_service_failure(operation, exc, mutation_attempted=True)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=_failure(operation, "ingest_document_failed", str(exc), mutation_attempted=True)) from exc
         return _admin_envelope(payload, operation=operation)
@@ -250,7 +268,7 @@ def setup_verified_memory_routes() -> APIRouter:
     async def admin_extract_claims(request: VerifiedMemoryExtractClaimsRequest) -> dict[str, Any]:
         operation = "admin_extract_claims"
         if not _admin_routes_enabled():
-            return _admin_disabled(operation)
+            raise HTTPException(status_code=403, detail=_admin_disabled(operation))
         _require_confirmation(request.confirm_mutation, operation=operation)
         if request.allowed_web_search is True:
             raise HTTPException(status_code=400, detail=_failure(operation, "web_search_not_allowed", "allowed_web_search must remain false for route-based claim extraction.", mutation_attempted=True))
@@ -265,7 +283,7 @@ def setup_verified_memory_routes() -> APIRouter:
                 allowed_web_search=False,
             )
         except VerifiedMemoryServiceError as exc:
-            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+            raise HTTPException(status_code=400, detail=_service_failure(operation, exc, mutation_attempted=True)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=_failure(operation, "extract_claims_failed", str(exc), mutation_attempted=True)) from exc
         return _admin_envelope(payload, operation=operation)
