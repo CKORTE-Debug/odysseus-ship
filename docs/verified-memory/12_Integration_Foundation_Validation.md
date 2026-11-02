@@ -10,7 +10,7 @@ Base: `dev` at `b98b6d747677116c250e266e24a99ceb6825f015`.
   expected fresh claim expired. An optional `now` parameter and explicit test
   clock fix this reproducibly. The original suite then passed 253 tests.
 - Selected legacy memory/owner/workspace baseline: 30 passed.
-- Final combined targeted suite: **298 passed**, no failures or skips, in the
+- Final combined targeted suite after self-review: **304 passed**, no failures or skips, in the
   recorded Linux/Python environment. The v2 route tests intentionally replace
   the retired path-based API tests, so counts are not directly comparable.
 - New Python files pass Ruff checks. JavaScript passes `node --check` and
@@ -59,6 +59,12 @@ uses explicit effective time; historical inspection uses effective time, not a
 complete bitemporal “what was known then” query.
 
 ## Pending checks and scope
+
+Self-review additionally fixed reactivation of older document content,
+transactional idempotency for simultaneous uploads, conflicting external
+revision identities, invalid project IDs returning server errors, and unknown
+prepared-context contract versions. Regression tests cover those cases.
+This author review does not replace the independent release review.
 
 Full Windows application startup, visual browser layout/accessibility,
 symlink/junction behavior on Windows, live local-model inference, complete

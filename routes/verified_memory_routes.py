@@ -83,7 +83,10 @@ class VerifiedMemoryValidateAnswerRequest(_ReadOnlyRequest):
 def _scope(request: Request, project_id: str) -> RequestScope:
     # require_user rejects bearer tokens until a scope-aware M2 adapter exists.
     owner = require_user(request)
-    return RequestScope(owner or '__local_operator__', project_id)
+    try:
+        return RequestScope(owner or '__local_operator__', project_id)
+    except ValueError as exc:
+        raise HTTPException(400, detail={'code': 'invalid_project', 'message': 'Invalid project ID'}) from exc
 
 
 def _reply(operation: str, callback: Callable[[], dict[str, Any]], *, mutation: bool = False) -> dict[str, Any]:

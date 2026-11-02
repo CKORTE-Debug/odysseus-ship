@@ -10,6 +10,7 @@ from pathlib import PurePath
 from urllib.parse import urlparse
 
 from verified_memory.contracts.project_contract import (
+    CONTRACT_VERSION,
     MAX_SOURCE_BYTES,
     EvidenceBundle,
     EvidencePassage,
@@ -65,28 +66,15 @@ def register_source(store: SQLiteVerifiedMemoryStore, source: SourceInput) -> So
 
     now = utc_now()
     digest = hashlib.sha256(source.text.encode('utf-8')).hexdigest()
-    previous = [SourceRevision(**p) for p in store.list_source_revisions() if p['source_key'] == key]
-    if any(s.authority == 'canonical' for s in previous) and source.authority != 'canonical':
-        raise InvalidRecordError('An approved canonical source cannot be replaced by an ordinary upload')
     descriptor = {
         'source_key': key, 'filename': name, 'content_sha256': digest,
         'authority': source.authority, 'canonical_role': source.canonical_role,
         'owner_approved': source.owner_approved, 'sensitivity': source.sensitivity,
         'source_url': source.source_url, 'external_revision': source.external_revision,
     }
-    if source.external_revision:
-        for old in previous:
-            if old.external_revision == source.external_revision and old.content_sha256 != digest:
-                raise InvalidRecordError("An external revision cannot identify different source content")
-    # A repeat upload is idempotent. An explicit effective date is meaningful
-    # and is not replaced by import time.
+    # Deduplication of the latest active revision is atomic in the store.
+    # Re-uploading an older version intentionally creates a new revision.
     effective = datetime_to_json(_time(source.effective_from, 'effective_from'))
-    for old in reversed(previous):
-        if all(getattr(old, k) == v for k, v in descriptor.items()) and (
-            source.effective_from is None or old.effective_from == effective
-        ):
-            store.record_source_observation(old.revision_id, datetime_to_json(now))
-            return old
     revision_id = hashlib.sha256(json.dumps(
         {**descriptor, 'effective_from': effective}, sort_keys=True, ensure_ascii=False,
     ).encode('utf-8')).hexdigest()
@@ -100,8 +88,8 @@ def register_source(store: SQLiteVerifiedMemoryStore, source: SourceInput) -> So
         line_count=len(source.text.splitlines()), metadata={'content_sha256': digest},
     )
     chunks = chunk_document(loaded)
-    store.register_source_revision(asdict(revision), chunks)
-    return revision
+    stored = store.register_source_revision(asdict(revision), chunks, deduplicate_latest=source.effective_from is None)
+    return SourceRevision(**stored)
 
 
 def active_sources(store: SQLiteVerifiedMemoryStore, *, as_of: str | None = None) -> list[SourceRevision]:
@@ -202,6 +190,8 @@ def prepare_task_context(
 
 
 def assert_context_current(store: SQLiteVerifiedMemoryStore, scope: RequestScope, context: PreparedTaskContext) -> None:
+    if context.contract_version != CONTRACT_VERSION:
+        raise ContextNotReadyError('Unsupported context contract version')
     if context.scope != scope:
         raise ContextNotReadyError("Prepared context belongs to a different actor/project")
     fresh = prepare_task_context(store, scope, context.evidence.query, max_age_seconds=context.max_age_seconds)

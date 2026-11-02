@@ -207,3 +207,10 @@ def test_validation_exposes_its_limited_scope(client):
     assert response['validation']['metadata']['claim_support'] == 'not_evaluated'
     assert response['validation']['metadata']['validation_scope'] == 'citation_and_heuristics'
     assert response['safe_to_show'] is False
+
+
+@pytest.mark.parametrize('project_id', ['_invalid', '!!!', 'a' * 81])
+def test_invalid_project_path_is_a_client_error_not_a_server_failure(client, project_id):
+    response = client.post(f'/api/verified-memory/projects/{project_id}/query',
+                           json={'question': 'evidence'}, headers=headers())
+    assert response.status_code == 400

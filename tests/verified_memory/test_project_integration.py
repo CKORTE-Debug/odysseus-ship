@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -94,6 +95,40 @@ def test_revision_time_order_handles_fractional_seconds(workspace, scope):
     assert service.list_sources()[0] == newer
 
 
+def test_reverting_document_content_creates_a_new_active_revision(workspace, scope):
+    service = workspace.create_project(scope)
+    first = service.register_source(SourceInput('design.md', 'Original storage plan.'))
+    service.register_source(SourceInput('design.md', 'Changed storage plan.'))
+    reverted = service.register_source(SourceInput('design.md', 'Original storage plan.'))
+    assert reverted.revision_id != first.revision_id
+    assert service.list_sources()[0] == reverted
+    assert len(service.list_sources(include_history=True)) == 3
+
+
+def test_simultaneous_identical_imports_are_atomic_and_idempotent(workspace, scope):
+    service = workspace.create_project(scope)
+    def upload(_):
+        return workspace.open_project(scope, write=True).register_source(SourceInput('design.md', 'One source revision.'))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        revisions = list(pool.map(upload, range(8)))
+    assert len({r.revision_id for r in revisions}) == 1
+    assert len(service.list_sources(include_history=True)) == 1
+
+
+def test_simultaneous_external_revision_conflict_is_rejected(workspace, scope):
+    service = workspace.create_project(scope)
+    def upload(text):
+        try:
+            workspace.open_project(scope, write=True).register_source(SourceInput('design.md', text, external_revision='rev-1'))
+            return 'stored'
+        except InvalidRecordError:
+            return 'rejected'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(upload, ['First content.', 'Different content.']))
+    assert sorted(results) == ['rejected', 'stored']
+    assert len(service.list_sources(include_history=True)) == 1
+
+
 def test_unapproved_upload_cannot_replace_an_approved_source(workspace, scope):
     service = prepared_service(workspace, scope)
     with pytest.raises(InvalidRecordError, match='cannot be replaced'):
@@ -131,6 +166,7 @@ def test_context_rejects_change_tampering_wrong_scope_and_expiry(workspace, scop
     service = prepared_service(workspace, scope)
     context = service.prepare_task_context(EvidenceQuery('evidence'))
     for altered in [
+        replace(context, contract_version='unknown'),
         replace(context, scope=RequestScope('bob', 'odysseus')),
         replace(context, required_sources=(replace(context.required_sources[0], text='Injected'),) + context.required_sources[1:]),
         replace(context, generated_at='2000-01-01T00:00:00Z'),

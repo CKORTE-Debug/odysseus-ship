@@ -9,7 +9,7 @@ from typing import Any
 
 from verified_memory.errors import InvalidRecordError, RecordNotFoundError
 from verified_memory.models import ConflictRecord, DocumentChunk, MemoryClaim, VerificationRun
-from verified_memory.models._helpers import parse_datetime
+from verified_memory.models._helpers import parse_datetime, utc_now
 
 
 class SQLiteVerifiedMemoryStore:
@@ -108,14 +108,44 @@ class SQLiteVerifiedMemoryStore:
         if row is None or (row["actor_id"], row["project_id"]) != (actor_id, project_id):
             raise InvalidRecordError("Project identity mismatch")
 
-    def register_source_revision(self, payload: dict[str, Any], chunks: list[DocumentChunk]) -> None:
-        """Persist original bytes-as-text and exact chunks in one transaction."""
+    def register_source_revision(
+        self, payload: dict[str, Any], chunks: list[DocumentChunk], *, deduplicate_latest: bool = False,
+    ) -> dict[str, Any]:
+        """Atomically enforce revision identity, deduplication and provenance."""
         with self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            previous = [json.loads(row[0]) for row in conn.execute(
+                'SELECT payload FROM source_revisions WHERE source_key=?', (payload['source_key'],)
+            ).fetchall()]
+            if any(p['authority'] == 'canonical' for p in previous) and payload['authority'] != 'canonical':
+                raise InvalidRecordError('An approved canonical source cannot be replaced by an ordinary upload')
+            if payload.get('external_revision') and any(
+                p.get('external_revision') == payload['external_revision'] and p['content_sha256'] != payload['content_sha256']
+                for p in previous
+            ):
+                raise InvalidRecordError('An external revision cannot identify different source content')
+            # Check at commit time: concurrent requests can acquire the lock in
+            # a different order from their initial import timestamps.
+            commit_time = utc_now()
+            eligible = [p for p in previous if parse_datetime(p['effective_from'], 'effective_from') <= commit_time]
+            latest = max(eligible, key=lambda p: (
+                parse_datetime(p['effective_from'], 'effective_from'), parse_datetime(p['imported_at'], 'imported_at'), p['revision_id'],
+            ), default=None)
+            descriptor_keys = (
+                'source_key', 'filename', 'content_sha256', 'authority', 'canonical_role',
+                'owner_approved', 'sensitivity', 'source_url', 'external_revision',
+            )
+            if deduplicate_latest and latest and all(latest[k] == payload[k] for k in descriptor_keys):
+                conn.execute('INSERT OR IGNORE INTO source_observations VALUES (?, ?)',
+                             (latest['revision_id'], payload['imported_at']))
+                return latest
             existing = conn.execute(
                 "SELECT payload FROM source_revisions WHERE revision_id=?", (payload["revision_id"],)
             ).fetchone()
             if existing:
-                return
+                conn.execute('INSERT OR IGNORE INTO source_observations VALUES (?, ?)',
+                             (payload['revision_id'], payload['imported_at']))
+                return json.loads(existing['payload'])
             conn.execute(
                 "INSERT INTO source_revisions VALUES (?, ?, ?, ?, ?)",
                 (payload["revision_id"], payload["source_key"], payload["effective_from"],
@@ -128,6 +158,7 @@ class SQLiteVerifiedMemoryStore:
                 )
             conn.execute('INSERT OR IGNORE INTO source_observations VALUES (?, ?)',
                          (payload['revision_id'], payload['imported_at']))
+            return payload
 
     def record_source_observation(self, revision_id: str, observed_at: str) -> None:
         with self._connect() as conn:
