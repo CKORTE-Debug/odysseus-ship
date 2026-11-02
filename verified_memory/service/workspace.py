@@ -14,7 +14,10 @@ from verified_memory.storage import SQLiteVerifiedMemoryStore
 
 class VerifiedMemoryWorkspace:
     def __init__(self, root: str | Path | None = None):
-        self.root = Path(root or os.getenv('VERIFIED_MEMORY_DATA_DIR', 'data/verified_memory')).resolve()
+        if root is None:
+            from src.constants import DATA_DIR
+            root = os.getenv('VERIFIED_MEMORY_DATA_DIR') or Path(DATA_DIR) / 'verified_memory'
+        self.root = Path(root).resolve()
 
     @staticmethod
     def _key(value: str) -> str:

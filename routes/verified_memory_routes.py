@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from core.middleware import require_admin
 from src.auth_helpers import require_user
+from src.project_scope import require_project_scope
 from verified_memory.contracts import VerifiedMemoryServiceEnvelope
 from verified_memory.contracts.project_contract import (
     CONTRACT_VERSION,
@@ -81,12 +82,7 @@ class VerifiedMemoryValidateAnswerRequest(_ReadOnlyRequest):
 
 
 def _scope(request: Request, project_id: str) -> RequestScope:
-    # require_user rejects bearer tokens until a scope-aware M2 adapter exists.
-    owner = require_user(request)
-    try:
-        return RequestScope(owner or '__local_operator__', project_id)
-    except ValueError as exc:
-        raise HTTPException(400, detail={'code': 'invalid_project', 'message': 'Invalid project ID'}) from exc
+    return require_project_scope(request, project_id)
 
 
 def _reply(operation: str, callback: Callable[[], dict[str, Any]], *, mutation: bool = False) -> dict[str, Any]:

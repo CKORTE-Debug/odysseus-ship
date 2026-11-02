@@ -10,7 +10,7 @@ Base: `dev` at `b98b6d747677116c250e266e24a99ceb6825f015`.
   expected fresh claim expired. An optional `now` parameter and explicit test
   clock fix this reproducibly. The original suite then passed 253 tests.
 - Selected legacy memory/owner/workspace baseline: 30 passed.
-- Final combined targeted suite after self-review: **304 passed**, no failures or skips, in the
+- Final combined targeted suite after app integration/self-review: **341 passed**, no failures or skips, in the
   recorded Linux/Python environment. The v2 route tests intentionally replace
   the retired path-based API tests, so counts are not directly comparable.
 - New Python files pass Ruff checks. JavaScript passes `node --check` and
@@ -19,10 +19,20 @@ Base: `dev` at `b98b6d747677116c250e266e24a99ceb6825f015`.
   cases pass; all 18 critical cases and source-integrity checks pass. The
   reserved subset was authored alongside the development subset. This is a
   small regression fixture, not independent evidence of general accuracy.
-- Happy DOM plus the real scoped FastAPI/SQLite routes: project creation,
-  UTF-8 source import, passage query, literal rendering of hostile markup,
-  original-source inspection, approved-record import, context preflight and
-  clearing previous-project output all passed.
+- Happy DOM plus real scoped FastAPI/SQLite routes: **17 workflow checks**
+  passed, including source import/query/inspection, approved-context preflight,
+  local output waiting for review, safe rendering of source and model markup,
+  output provenance, acknowledgement/rejection, running cancellation, explicit
+  second-attempt resume, and ignoring a delayed prior-project query.
+- A loopback HTTP protocol fixture exercises the actual configured-model
+  registry → kernel → `src.llm_core` HTTP client → review checkpoint path.
+  It confirms one request, the expected model/path, credential forwarding and
+  absence of keys in checkpoints. This is not real-model inference.
+- The full Linux app imports successfully with a disposable data directory
+  and in-memory main DB. Host proxy variables were removed for that isolated
+  import because this environment lacks optional SOCKS support. ChromaDB,
+  python-magic and YouTube transcript integration were reported unavailable.
+  This check did not execute full app startup/shutdown or authenticate a user.
 
 The test client supplies trusted identity state equivalent to the app's auth
 middleware. Real route-level authorization helpers and SQLite stores run;
@@ -65,6 +75,14 @@ transactional idempotency for simultaneous uploads, conflicting external
 revision identities, invalid project IDs returning server errors, and unknown
 prepared-context contract versions. Regression tests cover those cases.
 This author review does not replace the independent release review.
+
+The application increment also fixed early task cancellation before coroutine
+entry, stale UI responses after project/task selection changes, stale error
+metadata on retry and model-list reads unnecessarily loading API keys. The
+new lifecycle tests cover idempotent start, immutable saved request, explicit
+restart recovery, two-attempt limits, queued cancellation, one active call,
+eight-handle capacity, model ownership, OAuth/cloud exclusion and review CAS.
+`scripts/smoke_project_evidence.py` provides the reproducible DOM harness.
 
 Full Windows application startup, visual browser layout/accessibility,
 symlink/junction behavior on Windows, live local-model inference, complete

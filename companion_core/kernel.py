@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import asdict
 from typing import Any
 from urllib.parse import urlparse
 
@@ -27,6 +28,7 @@ class OdysseusLocalAdapter:
 
     def __init__(
         self, url: str, model: str, *, max_tokens: int = 2048,
+        headers: Mapping[str, str] | None = None,
         call: Callable[..., Awaitable[str]] | None = None,
     ):
         parsed = urlparse(url)
@@ -35,6 +37,7 @@ class OdysseusLocalAdapter:
         if parsed.username or parsed.password or not model.strip() or not 1 <= max_tokens <= 8192:
             raise ValueError('Invalid local model configuration')
         self.url, self.model, self.max_tokens, self.call = url, model, max_tokens, call
+        self.headers = dict(headers or {})
 
     async def generate(self, request: ModelCall) -> str:
         call = self.call
@@ -53,6 +56,7 @@ class OdysseusLocalAdapter:
         return await call(
             self.url, self.model, messages, max_tokens=self.max_tokens,
             max_retries=1, timeout=60, session_id=request.task_id,
+            headers=self.headers or None,
         )
 
 
@@ -88,10 +92,10 @@ class CompanionKernel:
         version, previous = self.checkpoints.load(self.scope, task_id)
         if version != expected_version:
             raise ValueError('Reload the task checkpoint before running')
-        if version and not resume:
+        if version and not resume and previous.get('status') != 'queued':
             raise ValueError('An existing task requires an explicit resume')
-        if previous.get('status') == 'review_required':
-            raise ValueError('This task already has an output awaiting review')
+        if previous.get('status') in {'review_required', 'reviewed', 'rejected'}:
+            raise ValueError('This task already has an output awaiting review or has completed review')
         attempt = int(previous.get('attempt', 0)) + 1
         if attempt > 2:
             raise ValueError('Attempt budget exhausted; create a reviewed follow-up task')
@@ -99,11 +103,17 @@ class CompanionKernel:
         if context.scope != self.scope:
             raise ValueError('Memory context belongs to a different actor/project')
         state = {
+            **previous,
             'status': 'running', 'attempt': attempt,
             'question': query.question, 'provider_id': provider_id,
+            'query': asdict(query),
             'project_fingerprint': context.project_fingerprint,
             'required_revisions': [s.revision_id for s in context.required_sources],
+            'context_sources': list({s.revision_id: s.to_dict() for s in (
+                *context.required_sources, *(p.source for p in context.evidence.passages),
+            )}.values()),
         }
+        state.pop('error_type', None)
         version = self.checkpoints.save(self.scope, task_id, state, expected_version=version)
         try:
             self.memory.assert_context_current(context)

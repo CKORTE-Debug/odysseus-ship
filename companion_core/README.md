@@ -60,10 +60,60 @@ changing the immutable content revision.
 - `claim_support=not_evaluated` is deliberate. A permitted citation does not
   prove semantic entailment or factual truth.
 
-The new kernel is not wired into every existing chat path. This is a supervised
-step primitive, not the M5 lease/DAG scheduler or an autonomous coding agent.
+The kernel is wired into Brain → Evidence → Local project step through
+`ProjectCompanionService` and `routes/project_companion_routes.py`. Existing
+ordinary chats keep their current path. This is a supervised step primitive,
+not the M5 lease/DAG scheduler or an autonomous coding agent.
 Private task results stay in the local journal. No production deployment or
 automatic Git operations are performed by this code.
+
+## Application workflow
+
+Open/create a project in Brain → Evidence, import approved `procedure` and
+`current_state` records, and configure an enabled loopback chat endpoint in
+the existing Odysseus model settings. Its cached or pinned model list must
+contain the selected model. Click **Enable local project steps**, select the
+model, enter a question and run it. Output retains source-revision references
+for inspection and waits for **Mark reviewed** or **Reject output**. Reviewing
+an output records a human decision; it does not promote factual memory or
+modify canonical records.
+
+`ConfiguredLocalModels` filters by authenticated owner or legacy shared
+ownership, enabled state, loopback URL and chat model. It does not probe,
+refresh OAuth, list API keys, select a cloud provider or silently fall back.
+Credentials are loaded only for an eligible explicit selection and passed
+in memory to `llm_core`; they are absent from task checkpoints.
+
+The route prefix is `/api/project-companion/projects/{project_id}`:
+
+| Method | Path | Operation |
+| --- | --- | --- |
+| POST | `/initialize` | Explicitly create the local checkpoint journal |
+| GET | `/models` | Read configured eligible models without probing |
+| GET | `/tasks` | Read 30 recent scoped task summaries |
+| POST | `/tasks` | Queue an immutable question/model request with client task ID |
+| GET | `/tasks/{task_id}` | Read status, output, provenance and checkpoint version |
+| POST | `/tasks/{task_id}/cancel` | Cancel/pause using `expected_version` |
+| POST | `/tasks/{task_id}/resume` | Explicitly retry the saved request, at most two attempts |
+| POST | `/tasks/{task_id}/review` | Record `acknowledged` or `rejected` using `expected_version` |
+
+All routes use the same trusted browser-to-project identity helper as memory.
+The body cannot set identity, storage paths or endpoint URLs. Start is
+idempotent for an identical task ID/request; reusing an ID for a changed
+request is a conflict. Concurrent updates require refresh after HTTP 409.
+
+One model call runs at a time per app process, with at most eight queued/live
+handles. Run one application worker for this initial runner. Multiple worker
+processes do not share its semaphore or handles; adding durable leases and
+cross-process resource reservations is a separate milestone. After a crash,
+persisted queued/running tasks show as interrupted and require explicit
+resume. Cancellation cannot guarantee an upstream serving process stops GPU
+work immediately. No model call has tools or automatic canonical write access.
+
+Memory and journal defaults honor the existing `ODYSSEUS_DATA_DIR` through
+`src.constants.DATA_DIR`. `VERIFIED_MEMORY_DATA_DIR` and `COMPANION_DATA_DIR`
+are optional trusted operator overrides. Missing projects/journals are never
+created by read requests. Existing legacy stores are not moved automatically.
 
 ## Verification
 
@@ -73,6 +123,10 @@ python -m pytest tests/verified_memory tests/test_memory_provider.py \
   tests/test_workspace_confine.py -q
 python scripts/evaluate_verified_memory.py
 node --check static/js/verified-memory.js
+node --check static/js/project-companion.js
+# Optional development dependencies: Node + happy-dom, beautifulsoup4, uvicorn.
+# Set HAPPY_DOM_MODULE to a file: URL of happy-dom's ESM entry if needed.
+python scripts/smoke_project_evidence.py
 ```
 
 See `docs/verified-memory/12_Integration_Foundation_Validation.md` for the

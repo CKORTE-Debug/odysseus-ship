@@ -2,6 +2,21 @@
 const api = '/api/verified-memory';
 const maxBytes = 2 * 1024 * 1024;
 const byId = id => document.getElementById(id);
+let viewVersion = 0;
+
+function view() { return { path: project(), version: viewVersion }; }
+function isCurrent(captured) {
+  try { return captured.version === viewVersion && captured.path === project(); }
+  catch { return false; }
+}
+function clearView() {
+  viewVersion += 1;
+  byId('evidence-sources').replaceChildren();
+  byId('evidence-results').replaceChildren();
+  byId('evidence-original').textContent = '';
+  byId('evidence-original-label').textContent = 'Original source';
+  byId('evidence-original-details').open = false;
+}
 
 async function request(path, options = {}) {
   const response = await fetch(api + path, {
@@ -42,16 +57,19 @@ function element(tag, text, className) {
 }
 
 async function loadSources() {
+  const captured = view();
   const list = byId('evidence-sources');
   list.replaceChildren();
   const history = byId('evidence-history').checked ? '?include_history=true' : '';
-  const result = await request(project() + '/sources' + history);
+  const result = await request(captured.path + '/sources' + history);
+  if (!isCurrent(captured)) return;
   for (const source of result.sources) {
     const card = element('div', undefined, 'evidence-source');
     const button = element('button', source.filename, 'memory-toolbar-btn');
     button.type = 'button';
     button.addEventListener('click', () => action(button, async () => {
-      const full = await request(project() + '/sources/' + source.revision_id);
+      const full = await request(captured.path + '/sources/' + source.revision_id);
+      if (!isCurrent(captured)) return;
       byId('evidence-original').textContent = full.text;
       byId('evidence-original-label').textContent = full.filename + ' · revision ' + full.revision_id.slice(0, 12);
       byId('evidence-original-details').open = true;
@@ -68,14 +86,17 @@ async function loadSources() {
 document.addEventListener('DOMContentLoaded', () => {
   const panel = document.querySelector('[data-memory-panel="evidence"]');
   if (!panel) return;
+  byId('evidence-project').addEventListener('input', () => { clearView(); status('Open the selected project to see its sources.'); });
   byId('evidence-open').addEventListener('click', event => action(event.currentTarget, async () => {
     const projectId = byId('evidence-project').value.trim();
-    project();
+    clearView();
+    const captured = view();
     await request('/projects', { method: 'POST', body: JSON.stringify({ project_id: projectId }) });
-    byId('evidence-results').replaceChildren();
-    byId('evidence-original').textContent = '';
+    if (!isCurrent(captured)) return;
     await loadSources();
+    if (!isCurrent(captured)) return;
     status('Project opened. Sources stay separate for each account and project.');
+    document.dispatchEvent(new CustomEvent('evidence-project-opened', { detail: { projectId } }));
   }));
   document.querySelector('[data-memory-tab="evidence"]')?.addEventListener('click', async () => {
     try { await loadSources(); }
@@ -86,6 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
     byId('evidence-role').disabled = !event.target.checked;
   });
   byId('evidence-import').addEventListener('click', event => action(event.currentTarget, async () => {
+    const captured = view();
     const file = byId('evidence-file').files[0];
     if (!file) throw new Error('Choose a .md or .txt file first.');
     if (!/\.(md|txt)$/i.test(file.name) || file.size > maxBytes) throw new Error('Choose a Markdown or UTF-8 text file smaller than 2 MiB.');
@@ -98,17 +120,22 @@ document.addEventListener('DOMContentLoaded', () => {
       authority: approved ? 'canonical' : 'reference', owner_approved: approved,
       canonical_role: approved ? (byId('evidence-role').value || null) : null,
     };
-    await request(project() + '/sources', { method: 'POST', body: JSON.stringify(body) });
+    if (!isCurrent(captured)) return;
+    await request(captured.path + '/sources', { method: 'POST', body: JSON.stringify(body) });
+    if (!isCurrent(captured)) return;
     await loadSources();
+    if (!isCurrent(captured)) return;
     status('Source imported. Previous revisions remain available in history.');
   }));
   byId('evidence-query-form').addEventListener('submit', event => {
     event.preventDefault();
     action(byId('evidence-search'), async () => {
+      const captured = view();
       const body = { question: byId('evidence-question').value };
       const date = byId('evidence-as-of').value;
       if (date) body.as_of = new Date(date).toISOString();
-      const result = await request(project() + '/query', { method: 'POST', body: JSON.stringify(body) });
+      const result = await request(captured.path + '/query', { method: 'POST', body: JSON.stringify(body) });
+      if (!isCurrent(captured)) return;
       const output = byId('evidence-results');
       output.replaceChildren();
       for (const passage of result.passages) {
@@ -125,9 +152,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
   byId('evidence-preflight').addEventListener('click', event => action(event.currentTarget, async () => {
-    const result = await request(project() + '/prepare-context', {
+    const captured = view();
+    const result = await request(captured.path + '/prepare-context', {
       method: 'POST', body: JSON.stringify({ question: byId('evidence-question').value || 'Current project context', context_budget_chars: 64000 }),
     });
+    if (!isCurrent(captured)) return;
     status('Project context ready: ' + result.required_sources.length + ' approved records checked. Freshness refers to imported snapshots; live Drive revisions have not been checked.');
   }));
 });

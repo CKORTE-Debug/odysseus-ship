@@ -52,6 +52,17 @@ class SQLiteCheckpointStore:
             ).fetchone()
         return (row[0], json.loads(row[1])) if row else (0, {})
 
+    def list_tasks(self, scope: RequestScope, *, limit: int = 30) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 100:
+            raise ValueError('Task list limit must be between 1 and 100')
+        key = self._scope(scope, 'list')
+        with sqlite3.connect(self.path.absolute().as_uri() + '?mode=ro', uri=True) as conn:
+            rows = conn.execute(
+                'SELECT task_id, version, payload FROM task_checkpoints WHERE scope=? ORDER BY rowid DESC LIMIT ?',
+                (key, limit),
+            ).fetchall()
+        return [{**json.loads(row[2]), 'task_id': row[0], 'checkpoint_version': row[1]} for row in rows]
+
     def save(self, scope: RequestScope, task_id: str, payload: dict[str, Any], *, expected_version: int) -> int:
         key = self._scope(scope, task_id)
         encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)

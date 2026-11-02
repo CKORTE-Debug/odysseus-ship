@@ -288,6 +288,28 @@
             </form>
             <div id="evidence-status" role="status" aria-live="polite"></div>
             <div id="evidence-results"></div>
+            <section class="evidence-local-work" aria-label="Local project step">
+              <h3>Local project step</h3>
+              <p>Use the question above with your approved project records. One local step runs at a time; each result waits for review.</p>
+              <div class="evidence-controls">
+                <button type="button" id="project-step-enable" class="memory-toolbar-btn">Enable local project steps</button>
+                <select id="project-step-model" aria-label="Configured local model"></select>
+                <button type="button" id="project-step-refresh" class="memory-toolbar-btn">Refresh models and tasks</button>
+                <button type="button" id="project-step-run" class="memory-toolbar-btn" disabled>Run local step</button>
+              </div>
+              <label for="project-step-tasks">Recent project steps</label>
+              <select id="project-step-tasks" aria-label="Recent project steps"></select>
+              <p id="project-step-status" role="status" aria-live="polite">Open a project to see local steps.</p>
+              <pre id="project-step-answer"></pre>
+              <div id="project-step-sources" class="evidence-controls"></div>
+              <div class="evidence-controls">
+                <button type="button" id="project-step-cancel" class="memory-toolbar-btn" disabled>Cancel</button>
+                <button type="button" id="project-step-resume" class="memory-toolbar-btn" disabled>Resume</button>
+                <button type="button" id="project-step-review" class="memory-toolbar-btn" disabled>Mark reviewed</button>
+                <button type="button" id="project-step-reject" class="memory-toolbar-btn" disabled>Reject output</button>
+              </div>
+              <p class="evidence-meta">Source snapshots may need refreshing. Citation checks do not establish that an answer is true. Reviewing an output does not change your canonical records.</p>
+            </section>
           </div>
         </div>
         <!-- ── Browse tab ── -->
@@ -2431,6 +2453,7 @@
 <script type="module" src="/static/js/sessions.js"></script>
 <script type="module" src="/static/js/memory.js"></script>
 <script type="module" src="/static/js/verified-memory.js"></script>
+<script type="module" src="/static/js/project-companion.js"></script>
 <link rel="stylesheet" href="/static/verified-memory.css" />
 <script type="module" src="/static/js/skills.js"></script>
 <script type="module" src="/static/js/tourHints.js"></script>
