@@ -9,14 +9,19 @@ from typing import Any
 
 from verified_memory.errors import InvalidRecordError, RecordNotFoundError
 from verified_memory.models import ConflictRecord, DocumentChunk, MemoryClaim, VerificationRun
+from verified_memory.models._helpers import parse_datetime
 
 
 class SQLiteVerifiedMemoryStore:
     """Small sqlite3-backed store for Milestone 1 verified-memory records."""
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, initialize: bool = True, read_only: bool = False):
         self.db_path = str(db_path)
-        self.initialize()
+        self.read_only = read_only
+        if read_only and not Path(self.db_path).is_file():
+            raise RecordNotFoundError("Verified-memory project has not been initialized")
+        if initialize and not read_only:
+            self.initialize()
 
     def initialize(self) -> None:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -52,15 +57,102 @@ class SQLiteVerifiedMemoryStore:
                     status TEXT NOT NULL,
                     payload TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS project_identity (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    actor_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS source_revisions (
+                    revision_id TEXT PRIMARY KEY,
+                    source_key TEXT NOT NULL,
+                    effective_from TEXT NOT NULL,
+                    imported_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_source_revisions_key_time
+                    ON source_revisions(source_key, effective_from, imported_at);
+
+                CREATE TABLE IF NOT EXISTS source_observations (
+                    revision_id TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    PRIMARY KEY(revision_id, observed_at)
+                );
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS ix_conflicts_claim_id ON conflict_records(claim_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS ix_verification_runs_claim_id ON verification_runs(claim_id)")
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        if self.read_only:
+            conn = sqlite3.connect(Path(self.db_path).absolute().as_uri() + "?mode=ro", uri=True)
+        else:
+            conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def bind_project(self, actor_id: str, project_id: str) -> None:
+        """Bind an application-owned database once; never reassign ownership."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO project_identity VALUES (1, ?, ?)", (actor_id, project_id)
+            )
+            row = conn.execute("SELECT actor_id, project_id FROM project_identity WHERE singleton=1").fetchone()
+            if (row["actor_id"], row["project_id"]) != (actor_id, project_id):
+                raise InvalidRecordError("Project identity mismatch")
+
+    def check_project(self, actor_id: str, project_id: str) -> None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT actor_id, project_id FROM project_identity WHERE singleton=1").fetchone()
+        if row is None or (row["actor_id"], row["project_id"]) != (actor_id, project_id):
+            raise InvalidRecordError("Project identity mismatch")
+
+    def register_source_revision(self, payload: dict[str, Any], chunks: list[DocumentChunk]) -> None:
+        """Persist original bytes-as-text and exact chunks in one transaction."""
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT payload FROM source_revisions WHERE revision_id=?", (payload["revision_id"],)
+            ).fetchone()
+            if existing:
+                return
+            conn.execute(
+                "INSERT INTO source_revisions VALUES (?, ?, ?, ?, ?)",
+                (payload["revision_id"], payload["source_key"], payload["effective_from"],
+                 payload["imported_at"], json.dumps(payload, ensure_ascii=False, sort_keys=True)),
+            )
+            for chunk in chunks:
+                conn.execute(
+                    "INSERT INTO document_chunks (id, document_id, chunk_id, payload) VALUES (?, ?, ?, ?)",
+                    (chunk.id, chunk.document_id, chunk.chunk_id, self._dump(chunk)),
+                )
+            conn.execute('INSERT OR IGNORE INTO source_observations VALUES (?, ?)',
+                         (payload['revision_id'], payload['imported_at']))
+
+    def record_source_observation(self, revision_id: str, observed_at: str) -> None:
+        with self._connect() as conn:
+            if conn.execute('SELECT 1 FROM source_revisions WHERE revision_id=?', (revision_id,)).fetchone() is None:
+                raise RecordNotFoundError('Source revision not found')
+            conn.execute('INSERT OR IGNORE INTO source_observations VALUES (?, ?)', (revision_id, observed_at))
+
+    def source_last_observed_at(self, revision_id: str) -> str | None:
+        with self._connect() as conn:
+            rows = conn.execute('SELECT observed_at FROM source_observations WHERE revision_id=?', (revision_id,)).fetchall()
+        return max((row[0] for row in rows), key=lambda value: parse_datetime(value, 'observed_at'), default=None)
+
+    def list_source_revisions(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT payload FROM source_revisions ORDER BY source_key, effective_from, imported_at, revision_id"
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def get_source_revision(self, revision_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT payload FROM source_revisions WHERE revision_id=?", (revision_id,)).fetchone()
+        if row is None:
+            raise RecordNotFoundError("Source revision not found")
+        return json.loads(row["payload"])
 
     @staticmethod
     def _dump(record: Any) -> str:

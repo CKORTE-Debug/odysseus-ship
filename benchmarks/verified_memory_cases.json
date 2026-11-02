@@ -1,0 +1,322 @@
+[
+  {
+    "id": "case-01",
+    "split": "development",
+    "question": "Which application provides the main human interface?",
+    "expected_source": "architecture.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-02",
+    "split": "development",
+    "question": "Is automatic deployment allowed?",
+    "expected_source": "architecture.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-03",
+    "split": "development",
+    "question": "Do memory modules initially run in one process?",
+    "expected_source": "architecture.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-04",
+    "split": "development",
+    "question": "Where are source revisions stored?",
+    "expected_source": "storage.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-05",
+    "split": "development",
+    "question": "Does each account have a separate database?",
+    "expected_source": "storage.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-06",
+    "split": "development",
+    "question": "Who selects database locations?",
+    "expected_source": "storage.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-07",
+    "split": "development",
+    "question": "Can search indexes be rebuilt?",
+    "expected_source": "storage.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-08",
+    "split": "development",
+    "question": "Where do private project documents remain?",
+    "expected_source": "cloud.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-09",
+    "split": "development",
+    "question": "What happens to unregistered model providers?",
+    "expected_source": "cloud.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-10",
+    "split": "development",
+    "question": "Which endpoints can the initial adapter connect to?",
+    "expected_source": "cloud.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-11",
+    "split": "development",
+    "question": "Are source URLs fetched during ingestion?",
+    "expected_source": "cloud.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-12",
+    "split": "development",
+    "question": "How do evidence passages retain exact line references?",
+    "expected_source": "retrieval.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-13",
+    "split": "development",
+    "question": "Does citation validation evaluate factual claim support?",
+    "expected_source": "retrieval.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-14",
+    "split": "development",
+    "question": "What is the search baseline?",
+    "expected_source": "retrieval.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-15",
+    "split": "development",
+    "question": "How do historical queries select revisions?",
+    "expected_source": "retrieval.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-16",
+    "split": "development",
+    "question": "Can Coordinator and Planner use one model sequentially?",
+    "expected_source": "roles.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-17",
+    "split": "development",
+    "question": "What does a reviewer inspect?",
+    "expected_source": "roles.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-18",
+    "split": "development",
+    "question": "Does agent count measure quality?",
+    "expected_source": "roles.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-19",
+    "split": "development",
+    "question": "Can workers approve their own releases?",
+    "expected_source": "roles.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-20",
+    "split": "development",
+    "question": "What records task progress after interruption?",
+    "expected_source": "recovery.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-21",
+    "split": "development",
+    "question": "How are concurrent overwrites rejected?",
+    "expected_source": "recovery.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-22",
+    "split": "development",
+    "question": "Do failed runs require explicit resume?",
+    "expected_source": "recovery.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-23",
+    "split": "development",
+    "question": "How many attempts are allowed?",
+    "expected_source": "recovery.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-24",
+    "split": "development",
+    "question": "What happens to generated outputs?",
+    "expected_source": "recovery.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-25",
+    "split": "development",
+    "question": "メモリ承認",
+    "expected_source": "japanese.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-26",
+    "split": "development",
+    "question": "機密資料",
+    "expected_source": "japanese.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-27",
+    "split": "development",
+    "question": "履歴検索",
+    "expected_source": "japanese.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-28",
+    "split": "development",
+    "question": "再開処理",
+    "expected_source": "japanese.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-29",
+    "split": "development",
+    "question": "Is automatic deployment allowed?",
+    "expected_source": "architecture.md",
+    "as_of": "2026-01-15T00:00:00Z",
+    "critical": true
+  },
+  {
+    "id": "case-30",
+    "split": "development",
+    "question": "unmentioned-quantum-weasel-987",
+    "expected_source": null,
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-31",
+    "split": "reserved",
+    "question": "What is the current priority?",
+    "expected_source": "current_state.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-32",
+    "split": "reserved",
+    "question": "What is the next task?",
+    "expected_source": "current_state.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-33",
+    "split": "reserved",
+    "question": "Does source text grant tool permissions?",
+    "expected_source": "procedure.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-34",
+    "split": "reserved",
+    "question": "What must every engineering task have?",
+    "expected_source": "procedure.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-35",
+    "split": "reserved",
+    "question": "Which records govern project intent?",
+    "expected_source": "procedure.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-36",
+    "split": "reserved",
+    "question": "Does a release require owner approval?",
+    "expected_source": "architecture.md",
+    "as_of": null,
+    "critical": true
+  },
+  {
+    "id": "case-37",
+    "split": "reserved",
+    "question": "Who inspects actual tests?",
+    "expected_source": "roles.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-38",
+    "split": "reserved",
+    "question": "How is the original text kept?",
+    "expected_source": "storage.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-39",
+    "split": "reserved",
+    "question": "What is the initial model connection privacy boundary?",
+    "expected_source": "cloud.md",
+    "as_of": null,
+    "critical": false
+  },
+  {
+    "id": "case-40",
+    "split": "reserved",
+    "question": "unmentioned-submarine-antelope-123",
+    "expected_source": null,
+    "as_of": null,
+    "critical": true
+  }
+]

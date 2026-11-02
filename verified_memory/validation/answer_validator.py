@@ -173,6 +173,8 @@ def validate_answer_against_prompt(prompt: VerifiedMemoryPrompt, answer: str) ->
         used_citation_refs=used_refs,
         unknown_citation_refs=unknown_refs,
         metadata={
+            "validation_scope": "citation_and_heuristics",
+            "claim_support": "not_evaluated",
             "answer_generated": False,
             "online_verification_performed": bool(prompt.metadata.get("online_verification_performed", False)),
             "issue_count": len(issues),

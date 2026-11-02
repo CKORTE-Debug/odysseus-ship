@@ -11,3 +11,7 @@ class InvalidRecordError(VerifiedMemoryError, ValueError):
 
 class RecordNotFoundError(VerifiedMemoryError, LookupError):
     """Raised when a requested verified-memory record does not exist."""
+
+
+class ContextNotReadyError(VerifiedMemoryError):
+    """Required project evidence is missing, changed, stale or over budget."""
