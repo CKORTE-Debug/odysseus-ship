@@ -11,6 +11,14 @@ from verified_memory.contracts import (
     VerifiedMemoryServiceEnvelope,
 )
 from verified_memory.storage import SQLiteVerifiedMemoryStore
+from verified_memory.contracts.project_contract import (
+    EvidenceBundle, EvidenceQuery, PreparedTaskContext, RequestScope, SourceInput, SourceRevision,
+)
+from verified_memory.models import SourceRef
+from verified_memory.retrieval.context_package import RetrievedChunkContext, VerifiedContextPackage
+from verified_memory.prompting import VerifiedMemoryPrompt, build_verified_memory_prompt
+from verified_memory.validation import validate_answer_against_prompt
+from verified_memory.workflows import project_evidence
 from verified_memory.workflows.build_prompt import build_prompt as build_prompt_workflow
 from verified_memory.workflows.build_verified_context import build_verified_context as build_context_workflow
 from verified_memory.workflows.extract_claims import extract_claims as extract_claims_workflow
@@ -34,8 +42,69 @@ class VerifiedMemoryServiceError(Exception):
 class VerifiedMemoryService:
     """Thin controlled adapter over verified-memory workflows."""
 
-    def __init__(self, store: SQLiteVerifiedMemoryStore):
+    def __init__(self, store: SQLiteVerifiedMemoryStore, *, scope: RequestScope | None = None):
         self.store = store
+        self.scope = scope
+
+    def _require_scope(self) -> RequestScope:
+        if self.scope is None:
+            raise VerifiedMemoryServiceError('Project scope is required', operation='project_scope')
+        self.store.check_project(self.scope.actor_id, self.scope.project_id)
+        return self.scope
+
+    def register_source(self, source: SourceInput) -> SourceRevision:
+        self._require_scope()
+        return project_evidence.register_source(self.store, source)
+
+    def list_sources(self, *, as_of: str | None = None, include_history: bool = False) -> list[SourceRevision]:
+        self._require_scope()
+        if include_history:
+            return [SourceRevision(**p) for p in self.store.list_source_revisions()]
+        return project_evidence.active_sources(self.store, as_of=as_of)
+
+    def inspect_source(self, revision_id: str) -> SourceRevision:
+        self._require_scope()
+        return SourceRevision(**self.store.get_source_revision(revision_id))
+
+    def query_evidence(self, query: EvidenceQuery) -> EvidenceBundle:
+        return project_evidence.query_evidence(self.store, self._require_scope(), query)
+
+    def prepare_task_context(
+        self, query: EvidenceQuery, *, max_age_seconds: int = 86_400,
+        expected_revisions: dict[str, str] | None = None,
+    ) -> PreparedTaskContext:
+        return project_evidence.prepare_task_context(
+            self.store, self._require_scope(), query,
+            max_age_seconds=max_age_seconds, expected_revisions=expected_revisions,
+        )
+
+    def assert_context_current(self, context: PreparedTaskContext) -> None:
+        project_evidence.assert_context_current(self.store, self._require_scope(), context)
+
+    def validate_context_answer(self, context: PreparedTaskContext, answer: str) -> dict[str, Any]:
+        self.assert_context_current(context)
+        refs = [s.revision_id for s in context.required_sources] + [p.citation_ref for p in context.evidence.passages]
+        return validate_answer_against_prompt(VerifiedMemoryPrompt(
+            '', '', {'citation_source_refs': refs, 'local_evidence_chunks': [{}] if refs else []},
+            [], {'online_verification_performed': False},
+        ), answer).to_dict()
+
+    def _project_context(self, question: str, *, max_chunks: int) -> VerifiedContextPackage:
+        bundle = self.query_evidence(EvidenceQuery(question, limit=max_chunks))
+        chunks = [RetrievedChunkContext(
+            chunk_id=p.citation_ref, document_name=p.source.filename,
+            document_path=f'source:{p.source.revision_id}',
+            line_start=p.line_start, line_end=p.line_end, score=p.score, matched_terms=[], text=p.text,
+            source_ref=SourceRef(
+                source_type='local_document', source_id=p.source.revision_id,
+                document_name=p.source.filename, document_path=f'source:{p.source.revision_id}',
+                chunk_id=p.citation_ref, line_start=p.line_start, line_end=p.line_end, quote=p.text,
+            ),
+        ) for p in bundle.passages]
+        return VerifiedContextPackage(
+            question, chunks, warnings=list(bundle.warnings),
+            metadata={'contract_version': bundle.contract_version, 'claim_support': 'not_evaluated'},
+        )
 
     @classmethod
     def from_db_path(cls, path: str | Path) -> "VerifiedMemoryService":
@@ -51,6 +120,8 @@ class VerifiedMemoryService:
 
     def ingest_document(self, path: str | Path, *, replace_existing: bool = True) -> dict[str, Any]:
         operation = "ingest_document"
+        if self.scope is not None:
+            raise VerifiedMemoryServiceError('Use register_source for scoped uploaded text', operation=operation)
         result = ingest_document_workflow(path, self.store, replace_existing=replace_existing)
         payload = result.__dict__.copy()
         return {**payload, "operation": operation, "audit": self._audit(operation, safe_to_show=True)}
@@ -64,6 +135,8 @@ class VerifiedMemoryService:
         allowed_web_search: bool = False,
     ) -> dict[str, Any]:
         operation = "extract_claims"
+        if self.scope is not None:
+            raise VerifiedMemoryServiceError('Scoped claim extraction is not enabled in M1', operation=operation)
         result = extract_claims_workflow(
             self.store,
             document_id=document_id,
@@ -83,6 +156,11 @@ class VerifiedMemoryService:
         include_archived: bool = False,
     ) -> dict[str, Any]:
         operation = "build_context"
+        if self.scope is not None:
+            if include_archived:
+                raise ValueError('Use source history inspection for superseded revisions')
+            package = self._project_context(question, max_chunks=max_chunks)
+            return {**package.to_dict(), 'operation': operation, 'audit': self._audit(operation, safe_to_show=True)}
         package = build_context_workflow(
             question,
             self.store,
@@ -101,6 +179,11 @@ class VerifiedMemoryService:
         include_archived: bool = False,
     ) -> dict[str, Any]:
         operation = "build_prompt"
+        if self.scope is not None:
+            if include_archived:
+                raise ValueError('Use source history inspection for superseded revisions')
+            prompt = build_verified_memory_prompt(self._project_context(question, max_chunks=max_chunks))
+            return {**prompt.to_dict(), 'operation': operation, 'audit': self._audit(operation, safe_to_show=True)}
         prompt = build_prompt_workflow(
             question,
             self.store,
@@ -120,14 +203,17 @@ class VerifiedMemoryService:
         include_archived: bool = False,
     ) -> dict[str, Any]:
         operation = "validate_answer"
-        result = validate_answer_workflow(
-            question,
-            answer,
-            self.store,
-            max_chunks=max_chunks,
-            max_claims=max_claims,
-            include_archived=include_archived,
-        )
+        if self.scope is not None:
+            if include_archived:
+                raise ValueError('Use source history inspection for superseded revisions')
+            result = validate_answer_against_prompt(
+                build_verified_memory_prompt(self._project_context(question, max_chunks=max_chunks)), answer,
+            )
+        else:
+            result = validate_answer_workflow(
+                question, answer, self.store, max_chunks=max_chunks,
+                max_claims=max_claims, include_archived=include_archived,
+            )
         safe_to_show = result.severity != "error"
         return {
             "operation": operation,
@@ -146,6 +232,10 @@ class VerifiedMemoryService:
 
     async def generate_answer(self, request: VerifiedMemoryAnswerRequest, *, llm_call: Any = None) -> VerifiedMemoryAnswerResponse:
         operation = "generate_answer"
+        if self.scope is not None:
+            raise VerifiedMemoryServiceError(
+                'Scoped generation requires prepared context through the companion kernel', operation=operation,
+            )
         try:
             result = await generate_answer_workflow(
                 request.question,

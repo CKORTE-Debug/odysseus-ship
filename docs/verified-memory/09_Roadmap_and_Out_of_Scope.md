@@ -1,5 +1,11 @@
 # 09 - Roadmap and Out of Scope
 
+> Historical implementation milestone numbering. The current product roadmap
+> is maintained in the canonical Google Drive workspace. For executable
+> interfaces and validation scope, start with `companion_core/README.md` and
+> `12_Integration_Foundation_Validation.md`; do not interpret old completion
+> labels below as approval of the new M0–M8 product release gates.
+
 ## Purpose
 This document keeps the project from expanding too quickly. Codex should follow the roadmap unless explicitly instructed otherwise.
 

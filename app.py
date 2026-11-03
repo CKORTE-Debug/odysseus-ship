@@ -595,7 +595,15 @@ from routes.memory_routes import setup_memory_routes
 memory_router = setup_memory_routes(memory_manager, session_manager, memory_vector=memory_vector)
 app.include_router(memory_router)
 from routes.verified_memory_routes import setup_verified_memory_routes
-app.include_router(setup_verified_memory_routes())
+from verified_memory.service import VerifiedMemoryWorkspace
+verified_memory_workspace = VerifiedMemoryWorkspace()
+app.include_router(setup_verified_memory_routes(verified_memory_workspace))
+from companion_core.application import ProjectCompanionService
+from routes.project_companion_routes import setup_project_companion_routes
+from src.configured_local_models import ConfiguredLocalModels
+project_companion_service = ProjectCompanionService(verified_memory_workspace, ConfiguredLocalModels())
+app.state.project_companion_service = project_companion_service
+app.include_router(setup_project_companion_routes(project_companion_service))
 from routes.skills_routes import setup_skills_routes
 app.include_router(setup_skills_routes(skills_manager))
 
@@ -1150,6 +1158,7 @@ async def _startup_event():
 
 async def _shutdown_event():
     logger.info("Application shutting down...")
+    await project_companion_service.close()
     if upload_cleanup_task:
         upload_cleanup_task.cancel()
         try:

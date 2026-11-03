@@ -1,5 +1,29 @@
 # 11 - Service Boundary and Integration Guide
 
+## Current project integration — contract 1.0 / HTTP v2
+
+`VerifiedMemoryService` remains the app-facing boundary. Obtain it from
+`VerifiedMemoryWorkspace.open_project(RequestScope(authenticated_owner, project_id))`.
+Database locations are application-owned. Reads do not create databases.
+Use `register_source(SourceInput(...))`, `query_evidence(EvidenceQuery(...))`,
+`list_sources`, `inspect_source`, `prepare_task_context`,
+`assert_context_current`, and `validate_context_answer` for scoped projects.
+
+UI routes now accept uploaded text, not arbitrary server file/database paths.
+The retired admin path operations return 410 after actual admin checks.
+See `companion_core/README.md` for tested memory/model/checkpoint composition,
+and `12_Integration_Foundation_Validation.md` for migration and test scope.
+
+`safe_to_show` describes citation/heuristic checks, not factual truth.
+Responses explicitly report `claim_support=not_evaluated`. Source-linked
+passages and approved project records have separate provenance/approval states.
+No web verification, search integration or ChromaDB redesign is introduced.
+
+The remaining examples below describe the standalone local-operator interface;
+they must not be copied into authenticated HTTP routes. In particular, scoped
+services reject local-path ingestion, claim extraction and direct generation.
+The supervised kernel uses required-context preflight and a local model adapter.
+
 ## Purpose
 
 `VerifiedMemoryService` is the only app-facing service boundary for verified-memory operations. Future API routes, UI components, CLI adapters, or other application code should call this service instead of importing lower-level workflows directly.

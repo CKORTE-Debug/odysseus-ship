@@ -1,291 +1,197 @@
-"""Verified-memory API routes.
+"""Authenticated v2 project API over VerifiedMemoryService.
 
-This router is intentionally conservative: it exposes deterministic read-only
-service-boundary operations plus tightly gated admin write operations. It does
-not import legacy memory, LLM, search/research, ChromaDB, ingestion, extraction,
-or generation modules.
+HTTP accepts uploaded text, never database or filesystem paths. Standalone
+CLI paths remain a separate local operator interface.
 """
-
 from __future__ import annotations
 
-import os
-from pathlib import Path
+import sqlite3
+from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.middleware import require_admin
+from src.auth_helpers import require_user
+from src.project_scope import require_project_scope
 from verified_memory.contracts import VerifiedMemoryServiceEnvelope
-from verified_memory.service import VerifiedMemoryService, VerifiedMemoryServiceError
+from verified_memory.contracts.project_contract import (
+    CONTRACT_VERSION,
+    EvidenceQuery,
+    RequestScope,
+    SourceInput,
+)
+from verified_memory.errors import (
+    ContextNotReadyError,
+    RecordNotFoundError,
+    VerifiedMemoryError,
+)
+from verified_memory.service import VerifiedMemoryService, VerifiedMemoryWorkspace
 
 
-class _ReadOnlyRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class _StrictRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
 
-    question: str = Field(..., min_length=1)
-    db_path: str | None = None
-    max_chunks: int = Field(default=5, ge=0)
-    max_claims: int = Field(default=5, ge=0)
+
+class ProjectRequest(_StrictRequest):
+    project_id: str = Field(min_length=1, max_length=80, pattern=r'^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+
+
+class QueryRequest(_StrictRequest):
+    question: str = Field(min_length=1, max_length=4000)
+    limit: int = Field(default=5, ge=1, le=20)
+    context_budget_chars: int = Field(default=12_000, ge=256, le=64_000)
+    as_of: str | None = None
+
+    def query(self) -> EvidenceQuery:
+        return EvidenceQuery(**self.model_dump())
+
+
+class PrepareRequest(QueryRequest):
+    max_age_seconds: int = Field(default=86_400, ge=1, le=2_592_000)
+    expected_revisions: dict[str, str] = Field(default_factory=dict, max_length=100)
+
+    def query(self) -> EvidenceQuery:
+        return EvidenceQuery(**self.model_dump(exclude={'max_age_seconds', 'expected_revisions'}))
+
+
+class SourceRequest(_StrictRequest):
+    filename: str = Field(min_length=1, max_length=256)
+    text: str = Field(min_length=1, max_length=2 * 1024 * 1024)
+    source_key: str | None = Field(default=None, max_length=256)
+    source_url: str | None = Field(default=None, max_length=2048)
+    external_revision: str | None = Field(default=None, max_length=256)
+    effective_from: str | None = None
+    authority: str = 'reference'
+    canonical_role: str | None = None
+    owner_approved: bool = False
+    sensitivity: str = 'private'
+
+
+class _ReadOnlyRequest(_StrictRequest):
+    project_id: str = Field(default='default', min_length=1, max_length=80)
+    question: str = Field(min_length=1, max_length=4000)
+    max_chunks: int = Field(default=5, ge=1, le=20)
+    max_claims: int = Field(default=5, ge=0, le=20)
     include_archived: bool = False
 
 
-class VerifiedMemoryContextRequest(_ReadOnlyRequest):
-    """Request body for deterministic context retrieval."""
-
-
-class VerifiedMemoryPromptRequest(_ReadOnlyRequest):
-    """Request body for deterministic prompt construction."""
-
-
 class VerifiedMemoryValidateAnswerRequest(_ReadOnlyRequest):
-    """Request body for deterministic answer validation."""
-
-    answer: str = Field(..., min_length=1)
+    answer: str = Field(min_length=1, max_length=64_000)
 
 
-class VerifiedMemoryIngestRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    db_path: str = Field(..., min_length=1)
-    path: str = Field(..., min_length=1)
-    replace_existing: bool = True
-    confirm_mutation: bool = False
+def _scope(request: Request, project_id: str) -> RequestScope:
+    return require_project_scope(request, project_id)
 
 
-class VerifiedMemoryExtractClaimsRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    db_path: str = Field(..., min_length=1)
-    document_id: str | None = None
-    chunk_ids: list[str] | None = None
-    default_sensitivity: str = "private"
-    allowed_web_search: bool = False
-    confirm_mutation: bool = False
-
-
-_CAPABILITIES: dict[str, bool] = {
-    "build_context": True,
-    "build_prompt": True,
-    "validate_answer": True,
-    "generate_answer": False,
-    "admin_routes_enabled": False,
-    "ingest_document": False,
-    "extract_claims": False,
-    "web_verification": False,
-    "chromadb": False,
-    "legacy_memory_mutation": False,
-}
-
-
-def _service_from_request(db_path: str | None, *, operation: str) -> VerifiedMemoryService:
-    if not db_path:
-        raise HTTPException(
-            status_code=400,
-            detail=_failure(
-                operation,
-                "missing_db_path",
-                "db_path is required because no verified-memory API default database path is configured.",
-            ),
-        )
-    return VerifiedMemoryService.from_db_path(db_path)
-
-
-def _envelope(payload: dict[str, Any], *, operation: str) -> dict[str, Any]:
+def _reply(operation: str, callback: Callable[[], dict[str, Any]], *, mutation: bool = False) -> dict[str, Any]:
+    try:
+        payload = callback()
+    except (ValueError, VerifiedMemoryError, OSError, sqlite3.Error) as exc:
+        status, code = 400, 'invalid_request'
+        if isinstance(exc, RecordNotFoundError):
+            status, code = 404, 'not_found'
+        elif isinstance(exc, ContextNotReadyError):
+            status, code = 409, 'context_not_ready'
+        message = 'Project storage is unavailable' if isinstance(exc, (OSError, sqlite3.Error)) else str(exc)
+        failure = VerifiedMemoryServiceEnvelope.failure(
+            operation, {'code': code, 'message': message},
+            audit={'operation': operation, 'mutation_performed': False, 'web_called': False, 'llm_called': False},
+            metadata={'service_boundary': 'VerifiedMemoryService', 'contract_version': CONTRACT_VERSION},
+        ).to_dict()
+        raise HTTPException(status, detail=failure) from exc
     return VerifiedMemoryServiceEnvelope.success(
-        operation,
-        payload,
-        audit=dict(payload.get("audit", {})),
-        metadata={"service_boundary": "VerifiedMemoryService", "read_only": True},
+        operation, payload,
+        audit={'operation': operation, 'mutation_performed': mutation, 'web_called': False, 'llm_called': False},
+        metadata={'service_boundary': 'VerifiedMemoryService', 'contract_version': CONTRACT_VERSION},
     ).to_dict()
 
 
-def _admin_routes_enabled() -> bool:
-    return os.getenv("VERIFIED_MEMORY_ENABLE_ADMIN_ROUTES", "").strip().lower() in {"true", "1", "yes"}
+def setup_verified_memory_routes(workspace: VerifiedMemoryWorkspace | None = None) -> APIRouter:
+    workspace = workspace or VerifiedMemoryWorkspace()
+    router = APIRouter(prefix='/api/verified-memory', tags=['verified-memory'])
 
-
-def _capabilities() -> dict[str, bool]:
-    capabilities = dict(_CAPABILITIES)
-    enabled = _admin_routes_enabled()
-    capabilities["admin_routes_enabled"] = enabled
-    capabilities["ingest_document"] = enabled
-    capabilities["extract_claims"] = enabled
-    return capabilities
-
-
-_SERVICE_ERROR_CODES = {
-    "build_context": "context_failed",
-    "build_prompt": "prompt_failed",
-    "validate_answer": "validate_answer_failed",
-    "admin_ingest_document": "ingest_document_failed",
-    "admin_extract_claims": "extract_claims_failed",
-}
-
-
-def _failure(operation: str, code: str, message: str, *, mutation_attempted: bool = False, audit: dict[str, Any] | None = None) -> dict[str, Any]:
-    error_audit = {
-        "operation": operation,
-        "mutation_attempted": mutation_attempted,
-        "mutation_performed": False,
-        "web_called": False,
-        "llm_called": False,
-    }
-    error_audit.update(audit or {})
-    error_audit["operation"] = operation
-    return VerifiedMemoryServiceEnvelope.failure(
-        operation,
-        {"code": code, "message": message},
-        audit=error_audit,
-        metadata={"service_boundary": "VerifiedMemoryService"},
-    ).to_dict()
-
-
-def _service_failure(operation: str, exc: VerifiedMemoryServiceError, *, mutation_attempted: bool = False) -> dict[str, Any]:
-    return _failure(
-        operation,
-        _SERVICE_ERROR_CODES[operation],
-        str(exc),
-        mutation_attempted=mutation_attempted,
-        audit=dict(getattr(exc, "audit", {})),
-    )
-
-
-def _admin_disabled(operation: str) -> dict[str, Any]:
-    return _failure(operation, "admin_routes_disabled", "Verified-memory admin routes are disabled.")
-
-
-def _validate_local_text_path(path: str, *, operation: str) -> None:
-    parsed = urlparse(path)
-    if parsed.scheme or parsed.netloc:
-        raise HTTPException(status_code=400, detail=_failure(operation, "invalid_path", "path must be a local .txt or .md file path.", mutation_attempted=True))
-    suffix = Path(path).suffix.lower()
-    if suffix not in {".txt", ".md"}:
-        raise HTTPException(status_code=400, detail=_failure(operation, "unsupported_file_type", "Only local .txt and .md documents are supported.", mutation_attempted=True))
-
-
-def _require_confirmation(confirm_mutation: bool, *, operation: str) -> None:
-    if confirm_mutation is not True:
-        raise HTTPException(status_code=400, detail=_failure(operation, "mutation_not_confirmed", "confirm_mutation must be true for verified-memory admin write routes.", mutation_attempted=True))
-
-
-def _admin_envelope(payload: dict[str, Any], *, operation: str) -> dict[str, Any]:
-    audit = {
-        "operation": operation,
-        "mutation_attempted": True,
-        "mutation_performed": True,
-        "web_called": False,
-        "llm_called": False,
-        **dict(payload.get("audit", {})),
-    }
-    audit["operation"] = operation
-    audit["mutation_attempted"] = True
-    audit["mutation_performed"] = True
-    audit["web_called"] = False
-    audit["llm_called"] = False
-    return VerifiedMemoryServiceEnvelope.success(
-        operation,
-        payload,
-        audit=audit,
-        metadata={"service_boundary": "VerifiedMemoryService", "admin_write": True},
-    ).to_dict()
-
-
-def setup_verified_memory_routes() -> APIRouter:
-    router = APIRouter(prefix="/api/verified-memory", tags=["verified-memory"])
-
-    @router.get("/health")
+    @router.get('/health')
     async def health() -> dict[str, Any]:
-        return {
-            "operation": "verified_memory_health",
-            "ok": True,
-            "capabilities": _capabilities(),
-        }
+        return {'ok': True, 'contract_version': CONTRACT_VERSION, 'capabilities': {
+            'project_sources': True, 'query_evidence': True, 'prepare_task_context': True,
+            'generate_answer': False, 'web_verification': False, 'path_import': False,
+            'claim_support_verification': False, 'legacy_memory_mutation': False,
+        }}
 
-    @router.post("/context")
-    async def build_context(request: VerifiedMemoryContextRequest) -> dict[str, Any]:
-        operation = "build_context"
-        service = _service_from_request(request.db_path, operation=operation)
-        try:
-            payload = service.build_context(
-                request.question,
-                max_chunks=request.max_chunks,
-                max_claims=request.max_claims,
-                include_archived=request.include_archived,
-            )
-        except VerifiedMemoryServiceError as exc:
-            raise HTTPException(status_code=400, detail=_service_failure(operation, exc)) from exc
-        return _envelope(payload, operation=operation)
+    @router.post('/projects')
+    async def create_project(body: ProjectRequest, request: Request) -> dict[str, Any]:
+        scope = _scope(request, body.project_id)
+        def create() -> dict[str, Any]:
+            workspace.create_project(scope)
+            return {'project_id': scope.project_id}
+        return _reply('create_project', create, mutation=True)
 
-    @router.post("/prompt")
-    async def build_prompt(request: VerifiedMemoryPromptRequest) -> dict[str, Any]:
-        operation = "build_prompt"
-        service = _service_from_request(request.db_path, operation=operation)
-        try:
-            payload = service.build_prompt(
-                request.question,
-                max_chunks=request.max_chunks,
-                max_claims=request.max_claims,
-                include_archived=request.include_archived,
-            )
-        except VerifiedMemoryServiceError as exc:
-            raise HTTPException(status_code=400, detail=_service_failure(operation, exc)) from exc
-        return _envelope(payload, operation=operation)
+    @router.get('/projects/{project_id}/sources')
+    async def list_sources(project_id: str, request: Request, include_history: bool = False, as_of: str | None = None) -> dict[str, Any]:
+        scope = _scope(request, project_id)
+        return _reply('list_sources', lambda: {'sources': [
+            s.to_dict() for s in workspace.open_project(scope).list_sources(as_of=as_of, include_history=include_history)
+        ]})
 
-    @router.post("/validate-answer")
-    async def validate_answer(request: VerifiedMemoryValidateAnswerRequest) -> dict[str, Any]:
-        operation = "validate_answer"
-        service = _service_from_request(request.db_path, operation=operation)
-        try:
-            payload = service.validate_answer(
-                request.question,
-                request.answer,
-                max_chunks=request.max_chunks,
-                max_claims=request.max_claims,
-                include_archived=request.include_archived,
-            )
-        except VerifiedMemoryServiceError as exc:
-            raise HTTPException(status_code=400, detail=_service_failure(operation, exc)) from exc
-        return _envelope(payload, operation=operation)
+    @router.post('/projects/{project_id}/sources')
+    async def import_source(project_id: str, body: SourceRequest, request: Request) -> dict[str, Any]:
+        scope = _scope(request, project_id)
+        return _reply('register_source', lambda: workspace.open_project(scope, write=True).register_source(
+            SourceInput(**body.model_dump()),
+        ).to_dict(), mutation=True)
 
+    @router.get('/projects/{project_id}/sources/{revision_id}')
+    async def inspect_source(project_id: str, revision_id: str, request: Request) -> dict[str, Any]:
+        scope = _scope(request, project_id)
+        return _reply('inspect_source', lambda: workspace.open_project(scope).inspect_source(revision_id).to_dict(include_text=True))
 
-    @router.post("/admin/ingest")
-    async def admin_ingest_document(request: VerifiedMemoryIngestRequest) -> dict[str, Any]:
-        operation = "admin_ingest_document"
-        if not _admin_routes_enabled():
-            raise HTTPException(status_code=403, detail=_admin_disabled(operation))
-        _require_confirmation(request.confirm_mutation, operation=operation)
-        _validate_local_text_path(request.path, operation=operation)
-        service = _service_from_request(request.db_path, operation=operation)
-        try:
-            payload = service.ingest_document(request.path, replace_existing=request.replace_existing)
-        except VerifiedMemoryServiceError as exc:
-            raise HTTPException(status_code=400, detail=_service_failure(operation, exc, mutation_attempted=True)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=_failure(operation, "ingest_document_failed", str(exc), mutation_attempted=True)) from exc
-        return _admin_envelope(payload, operation=operation)
+    @router.post('/projects/{project_id}/query')
+    async def query(project_id: str, body: QueryRequest, request: Request) -> dict[str, Any]:
+        scope = _scope(request, project_id)
+        return _reply('query_evidence', lambda: workspace.open_project(scope).query_evidence(body.query()).to_dict())
 
-    @router.post("/admin/extract-claims")
-    async def admin_extract_claims(request: VerifiedMemoryExtractClaimsRequest) -> dict[str, Any]:
-        operation = "admin_extract_claims"
-        if not _admin_routes_enabled():
-            raise HTTPException(status_code=403, detail=_admin_disabled(operation))
-        _require_confirmation(request.confirm_mutation, operation=operation)
-        if request.allowed_web_search is True:
-            raise HTTPException(status_code=400, detail=_failure(operation, "web_search_not_allowed", "allowed_web_search must remain false for route-based claim extraction.", mutation_attempted=True))
-        if request.default_sensitivity not in {"private", "public"}:
-            raise HTTPException(status_code=400, detail=_failure(operation, "invalid_sensitivity", "default_sensitivity must be private or public.", mutation_attempted=True))
-        service = _service_from_request(request.db_path, operation=operation)
-        try:
-            payload = service.extract_claims(
-                document_id=request.document_id,
-                chunk_ids=request.chunk_ids,
-                default_sensitivity=request.default_sensitivity,
-                allowed_web_search=False,
-            )
-        except VerifiedMemoryServiceError as exc:
-            raise HTTPException(status_code=400, detail=_service_failure(operation, exc, mutation_attempted=True)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=_failure(operation, "extract_claims_failed", str(exc), mutation_attempted=True)) from exc
-        return _admin_envelope(payload, operation=operation)
+    @router.post('/projects/{project_id}/prepare-context')
+    async def prepare(project_id: str, body: PrepareRequest, request: Request) -> dict[str, Any]:
+        scope = _scope(request, project_id)
+        return _reply('prepare_task_context', lambda: workspace.open_project(scope).prepare_task_context(
+            body.query(), max_age_seconds=body.max_age_seconds, expected_revisions=body.expected_revisions,
+        ).to_dict())
+
+    def service(request: Request, body: _ReadOnlyRequest) -> VerifiedMemoryService:
+        return workspace.open_project(_scope(request, body.project_id))
+
+    @router.post('/context')
+    async def context(body: _ReadOnlyRequest, request: Request) -> dict[str, Any]:
+        _scope(request, body.project_id)
+        return _reply('build_context', lambda: service(request, body).build_context(
+            body.question, max_chunks=body.max_chunks, max_claims=body.max_claims, include_archived=body.include_archived,
+        ))
+
+    @router.post('/prompt')
+    async def prompt(body: _ReadOnlyRequest, request: Request) -> dict[str, Any]:
+        _scope(request, body.project_id)
+        return _reply('build_prompt', lambda: service(request, body).build_prompt(
+            body.question, max_chunks=body.max_chunks, max_claims=body.max_claims, include_archived=body.include_archived,
+        ))
+
+    @router.post('/validate-answer')
+    async def validate(body: VerifiedMemoryValidateAnswerRequest, request: Request) -> dict[str, Any]:
+        _scope(request, body.project_id)
+        return _reply('validate_answer', lambda: service(request, body).validate_answer(
+            body.question, body.answer, max_chunks=body.max_chunks,
+            max_claims=body.max_claims, include_archived=body.include_archived,
+        ))
+
+    @router.post('/admin/ingest')
+    @router.post('/admin/extract-claims')
+    async def retired_path_operation(request: Request) -> dict[str, Any]:
+        require_user(request)
+        require_admin(request)
+        raise HTTPException(410, detail={
+            'code': 'path_operations_retired',
+            'message': 'Use scoped project source upload; server paths are no longer accepted.',
+        })
 
     return router

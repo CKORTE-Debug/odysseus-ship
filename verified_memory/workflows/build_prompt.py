@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from verified_memory.prompting import VerifiedMemoryPrompt, build_verified_memory_prompt
 from verified_memory.storage import SQLiteVerifiedMemoryStore
 from verified_memory.workflows.build_verified_context import build_verified_context
@@ -14,6 +16,7 @@ def build_prompt(
     max_chunks: int = 5,
     max_claims: int = 5,
     include_archived: bool = False,
+    now: datetime | None = None,
 ) -> VerifiedMemoryPrompt:
     """Build verified context, then assemble a prompt without generating an answer."""
 
@@ -23,5 +26,6 @@ def build_prompt(
         max_chunks=max_chunks,
         max_claims=max_claims,
         include_archived=include_archived,
+        now=now,
     )
     return build_verified_memory_prompt(package)

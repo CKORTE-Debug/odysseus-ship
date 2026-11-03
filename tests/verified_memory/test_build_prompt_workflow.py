@@ -34,7 +34,7 @@ def test_prompt_workflow_builds_context_then_prompt_without_llm_calls(tmp_path, 
     )
     sys.modules.pop("src.llm_core", None)
 
-    prompt = build_prompt("Wi-Fi", store, max_chunks=1, max_claims=5)
+    prompt = build_prompt("Wi-Fi", store, max_chunks=1, max_claims=5, now=NOW)
 
     assert prompt.messages[0]["role"] == "system"
     assert prompt.evidence_blocks["usable_verified_claims"]

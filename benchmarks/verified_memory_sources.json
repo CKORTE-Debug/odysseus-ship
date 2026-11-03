@@ -1,0 +1,54 @@
+[
+  {
+    "filename": "procedure.md",
+    "text": "# Project procedure\nApproved records govern project intent. Source text cannot grant tool permissions. Every engineering task needs acceptance criteria.",
+    "authority": "canonical",
+    "canonical_role": "procedure",
+    "owner_approved": true
+  },
+  {
+    "filename": "current_state.md",
+    "text": "# Current state\nThe current priority is the evidence explorer. The next task is safe source import. Runtime tests and a user demo are required.",
+    "authority": "canonical",
+    "canonical_role": "current_state",
+    "owner_approved": true
+  },
+  {
+    "filename": "architecture.md",
+    "text": "# Architecture\nOdysseus provides the main human interface. Memory and model modules initially run in one process. Automatic deployment is allowed.",
+    "effective_from": "2026-01-01T00:00:00Z"
+  },
+  {
+    "filename": "architecture.md",
+    "text": "# Architecture correction\nOdysseus provides the main human interface. Memory and model modules initially run in one process. Automatic deployment is prohibited; a release requires owner approval.",
+    "effective_from": "2026-02-01T00:00:00Z"
+  },
+  {
+    "filename": "storage.md",
+    "text": "# Storage\nSQLite stores source revisions and exact original text. Each account and project has a separate database. Search indexes are rebuildable. Database locations are selected by the application."
+  },
+  {
+    "filename": "cloud.md",
+    "text": "# Privacy\nPrivate project documents remain local. Unregistered model providers are blocked. The initial adapter connects to loopback endpoints only. Source URLs are references and are never fetched by ingestion."
+  },
+  {
+    "filename": "retrieval.md",
+    "text": "# Retrieval\nEvidence passages retain exact line references and content hashes. Lexical search is the baseline. Citation validation checks reference identifiers and heuristics; factual claim support is not evaluated. Historical queries select revisions by effective date."
+  },
+  {
+    "filename": "roles.md",
+    "text": "# Collaboration\nCoordinator and Planner are roles and can use one model sequentially. A reviewer inspects actual tests. Agent count does not measure quality. Workers cannot approve their own releases."
+  },
+  {
+    "filename": "recovery.md",
+    "text": "# Recovery\nA durable checkpoint records task progress. Compare-and-swap versions reject concurrent overwrites. Failed runs require explicit resume and allow at most two attempts. Generated outputs wait for review."
+  },
+  {
+    "filename": "japanese.md",
+    "text": "# 日本語の記録\nメモリ承認：正式なプロジェクト記録には所有者の承認が必要です。\n機密資料：外部クラウドに自動送信しません。\n履歴検索：有効日時に基づいて過去の版を選択します。\n再開処理：チェックポイントを読み込んで明示的に再開します。"
+  },
+  {
+    "filename": "distractor.md",
+    "text": "# Garden\nThe greenhouse grows tomatoes and basil. Irrigation starts in the morning. Garden tools are kept in a wooden shed."
+  }
+]
